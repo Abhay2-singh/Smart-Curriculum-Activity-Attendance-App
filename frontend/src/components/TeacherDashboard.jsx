@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import {
   Plus,
@@ -28,12 +28,49 @@ import CountdownTimer from './common/CountdownTimer';
 import RiskBadge from './common/RiskBadge';
 import Toast from './common/Toast';
 
+function getAttendanceOptions(assignments, timetables, divisions) {
+  const options = [];
+  assignments.filter((assignment) => assignment.is_active).forEach((assignment) => {
+    divisions
+      .filter((division) => (
+        division.academic_class_id === assignment.academic_class_id
+        && division.academic_year_id === assignment.academic_year_id
+        && division.semester_id === assignment.semester_id
+        && (assignment.division_id == null || division.id === assignment.division_id)
+      ))
+      .forEach((division) => {
+        options.push({
+          academic_year_id: assignment.academic_year_id,
+          semester_id: assignment.semester_id,
+          division_id: division.id,
+          batch_id: assignment.batch_id,
+          subject_id: assignment.subject_id,
+        });
+      });
+  });
+  timetables.filter((entry) => entry.is_active).forEach((entry) => {
+    options.push({
+      academic_year_id: entry.academic_year_id,
+      semester_id: entry.semester_id,
+      division_id: entry.division_id,
+      batch_id: entry.batch_id,
+      subject_id: entry.subject_id,
+    });
+  });
+  return [...new Map(options.map((option) => [
+    `${option.academic_year_id}:${option.semester_id}:${option.division_id}:${option.batch_id ?? ''}:${option.subject_id}`,
+    option,
+  ])).values()];
+}
+
 export default function TeacherDashboard({ user, activeTab = 'overview', onNavigate }) {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [dataError, setDataError] = useState('');
   const [activeQrSession, setActiveQrSession] = useState(null);
+  const [monitorData, setMonitorData] = useState(null);
   const [toast, setToast] = useState({ message: '', type: 'success' });
-  const [qrRefreshCount, setQrRefreshCount] = useState(0);
+  const tokenRefreshInFlight = useRef(false);
 
   // Form states for creating session
   const [academicYears, setAcademicYears] = useState([]);
@@ -42,6 +79,7 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
   const [batches, setBatches] = useState([]);
   const [subjects, setSubjects] = useState([]);
   const [timetables, setTimetables] = useState([]);
+  const [attendanceOptions, setAttendanceOptions] = useState([]);
 
   const [form, setForm] = useState({
     academic_year_id: '',
@@ -59,6 +97,8 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
   const [records, setRecords] = useState([]);
   const [recordLoading, setRecordLoading] = useState(false);
   const [studentSearch, setStudentSearch] = useState('');
+  const [sessionSubjectFilter, setSessionSubjectFilter] = useState('');
+  const [sessionDateFilter, setSessionDateFilter] = useState('');
 
   // Correction Modal
   const [correctingRecord, setCorrectingRecord] = useState(null);
@@ -71,7 +111,7 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
 
   // Defaulters report state
   const [defaulters, setDefaulters] = useState([]);
-  const [threshold, setThreshold] = useState(75);
+  const [threshold, setThreshold] = useState(null);
 
   useEffect(() => {
     fetchTeacherData();
@@ -79,55 +119,123 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
 
   useEffect(() => {
     if (form.division_id) {
-      api.getBatches(form.division_id).then(setBatches).catch(() => setBatches([]));
+      api.getBatches(form.division_id)
+        .then(setBatches)
+        .catch((err) => setDataError(err.message || 'Unable to load batches.'));
     } else {
       setBatches([]);
     }
   }, [form.division_id]);
 
+  useEffect(() => {
+    if (!activeQrSession || activeQrSession.status !== 'ACTIVE') return undefined;
+    const intervalSeconds = activeQrSession.qr_refresh_interval_seconds;
+    if (!intervalSeconds) return undefined;
+    const interval = setInterval(async () => {
+      if (tokenRefreshInFlight.current) return;
+      tokenRefreshInFlight.current = true;
+      try {
+        const refreshed = await api.refreshSessionToken(activeQrSession.id);
+        setActiveQrSession(refreshed);
+        setSessions((current) => current.map((session) => (
+          session.id === refreshed.id ? refreshed : session
+        )));
+        setToast({ message: 'QR token refreshed securely.', type: 'success' });
+      } catch (err) {
+        setToast({ message: err.message || 'QR token refresh failed. Reopen the session or retry.', type: 'error' });
+        setActiveQrSession(null);
+        api.getSessions().then(setSessions).catch((refreshError) => {
+          setDataError(refreshError.message || 'Unable to refresh attendance sessions.');
+        });
+      } finally {
+        tokenRefreshInFlight.current = false;
+      }
+    }, intervalSeconds * 1000);
+    return () => clearInterval(interval);
+  }, [activeQrSession?.id, activeQrSession?.qr_refresh_interval_seconds, activeQrSession?.status]);
+
+  useEffect(() => {
+    if (!selectedSessionRecords || selectedSessionRecords.status !== 'ACTIVE') return undefined;
+    const refreshMonitor = async () => {
+      try {
+        const [currentMonitor, currentRecords] = await Promise.all([
+          api.getSessionMonitor(selectedSessionRecords.id),
+          api.getSessionRecords(selectedSessionRecords.id),
+        ]);
+        setMonitorData(currentMonitor);
+        setRecords(currentRecords);
+      } catch (err) {
+        setDataError(err.message || 'Unable to refresh the live attendance monitor.');
+      }
+    };
+    const interval = setInterval(refreshMonitor, 5000);
+    return () => clearInterval(interval);
+  }, [selectedSessionRecords?.id, selectedSessionRecords?.status]);
+
   const fetchTeacherData = async () => {
     setLoading(true);
+    setDataError('');
     try {
-      const teacherId = user.teacher_profile ? user.teacher_profile.id : null;
-      const [sessData, years, divs, subs, ttData] = await Promise.all([
-        api.getSessions(teacherId ? { teacher_id: teacherId } : {}).catch(() => []),
-        api.getAcademicYears().catch(() => []),
-        api.getDivisions().catch(() => []),
-        api.getSubjects().catch(() => []),
-        api.getTimetables(teacherId ? { teacher_id: teacherId } : {}).catch(() => []),
+      const teacherId = user.teacher_profile?.id;
+      const [sessData, years, divs, allSubjects, ttData, assignments] = await Promise.all([
+        api.getSessions(),
+        api.getAcademicYears(),
+        api.getDivisions(),
+        api.getSubjects(),
+        api.getTimetables(),
+        teacherId ? api.getSubjectAssignments(teacherId) : Promise.resolve([]),
       ]);
 
       setSessions(sessData);
       setAcademicYears(years);
-      let loadedSems = [];
-      if (years.length > 0) {
-        loadedSems = await api.getSemesters(years[0].id).catch(() => []);
-        setSemesters(loadedSems);
-      }
-      setDivisions(divs);
-      setSubjects(subs);
-      setTimetables(ttData);
+      const semesterGroups = await Promise.all(years.map((year) => api.getSemesters(year.id)));
+      const allSemesters = semesterGroups.flat();
+      const teacherTimetables = teacherId
+        ? ttData.filter((item) => item.teacher_id === teacherId && item.is_active)
+        : [];
+      const attendanceAssignments = assignments.filter((item) => item.is_active);
+      const options = getAttendanceOptions(attendanceAssignments, teacherTimetables, divs);
+      const teacherDivisions = divs.filter((division) => (
+        options.some((option) => option.division_id === division.id)
+      ));
+      const assignedSubjectIds = new Set(options.map((option) => option.subject_id));
+      setSemesters(allSemesters);
+      setAttendanceOptions(options);
+      setDivisions(teacherDivisions);
+      setSubjects(allSubjects.filter((subject) => assignedSubjectIds.has(subject.id)));
+      setTimetables(teacherTimetables);
 
-      // Auto-prefill default selections for dropdowns
-      setForm((prev) => ({
-        ...prev,
-        academic_year_id: prev.academic_year_id || (years.length > 0 ? years[0].id.toString() : ''),
-        semester_id: prev.semester_id || (loadedSems.length > 0 ? loadedSems[0].id.toString() : ''),
-        division_id: prev.division_id || (divs.length > 0 ? divs[0].id.toString() : ''),
-        subject_id: prev.subject_id || (subs.length > 0 ? subs[0].id.toString() : ''),
-      }));
+      setForm((previous) => {
+        const existingOption = options.find((option) => (
+          option.academic_year_id === Number(previous.academic_year_id)
+          && option.semester_id === Number(previous.semester_id)
+          && option.division_id === Number(previous.division_id)
+          && option.subject_id === Number(previous.subject_id)
+          && (option.batch_id == null || option.batch_id === Number(previous.batch_id))
+        ));
+        const selection = existingOption || options[0];
+        return {
+          ...previous,
+          academic_year_id: selection ? String(selection.academic_year_id) : '',
+          semester_id: selection ? String(selection.semester_id) : '',
+          division_id: selection ? String(selection.division_id) : '',
+          batch_id: selection?.batch_id == null ? '' : String(selection.batch_id),
+          subject_id: selection ? String(selection.subject_id) : '',
+        };
+      });
 
       if (activeTab === 'corrections') {
-        const logs = await api.getAuditLogs().catch(() => []);
+        const logs = await api.getAuditLogs();
         setAuditLogs(logs);
       }
 
       if (activeTab === 'reports') {
-        const defData = await api.getDefaulters(null, threshold).catch(() => ({ defaulters: [] }));
+        const defData = await api.getDefaulters(null, threshold);
         setDefaulters(defData.defaulters || []);
+        setThreshold((current) => current ?? defData.threshold_percentage);
       }
     } catch (err) {
-      console.error(err);
+      setDataError(err.message || 'Unable to load teacher dashboard data.');
     } finally {
       setLoading(false);
     }
@@ -138,19 +246,34 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
     setCreateError('');
     setCreateSuccessMsg('');
 
+    if (!hasValidAttendanceSelection) {
+      setCreateError(
+        attendanceOptions.length
+          ? 'Choose a class, subject, and batch combination assigned to your account.'
+          : 'No active class or subject assignment was found. Ask an administrator to assign you to a class and subject first.'
+      );
+      return;
+    }
+
     if (!form.academic_year_id || !form.semester_id || !form.division_id || !form.subject_id) {
       setCreateError('Please select Academic Year, Semester, Division, and Subject');
       return;
     }
 
     try {
+      if (!user.teacher_profile?.id) {
+        setCreateError('Your account does not have a teacher profile. Ask an administrator to link one.');
+        return;
+      }
       const now = new Date();
-      const todayStr = now.toISOString().split('T')[0];
-      const startTime = '09:00:00';
-      const endTime = '10:00:00';
+      const localDate = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+      const todayStr = localDate.toISOString().split('T')[0];
+      const startTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:00`;
+      const endTimeDate = new Date(now.getTime() + Number(form.duration_minutes) * 60000);
+      const endTime = `${String(endTimeDate.getHours()).padStart(2, '0')}:${String(endTimeDate.getMinutes()).padStart(2, '0')}:00`;
       const expiresAt = new Date(now.getTime() + parseInt(form.duration_minutes) * 60000).toISOString();
 
-      const teacherId = user.teacher_profile ? user.teacher_profile.id : 1;
+      const teacherId = user.teacher_profile.id;
 
       const payload = {
         academic_year_id: parseInt(form.academic_year_id),
@@ -176,13 +299,33 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
 
   const handleCloseSession = async (id) => {
     try {
-      await api.closeSession(id);
+      const closed = await api.closeSession(id);
       fetchTeacherData();
+      if (selectedSessionRecords?.id === id) setSelectedSessionRecords(closed);
       if (activeQrSession && activeQrSession.id === id) {
         setActiveQrSession(null);
       }
+      setToast({ message: 'Attendance session closed.', type: 'success' });
     } catch (err) {
-      alert(err.message);
+      setToast({ message: err.message || 'Unable to close attendance session.', type: 'error' });
+    }
+  };
+
+  const handleShowQr = async (session) => {
+    try {
+      let current = await api.getAttendanceSession(session.id);
+      const secondsUntilExpiry = (
+        new Date(current.qr_token_expires_at || current.expires_at).getTime() - Date.now()
+      ) / 1000;
+      const refreshWindow = current.qr_token_ttl_seconds
+        - current.qr_refresh_interval_seconds + 2;
+      if (secondsUntilExpiry <= refreshWindow) {
+        current = await api.refreshSessionToken(session.id);
+      }
+      setActiveQrSession(current);
+      setSessions((existing) => existing.map((item) => item.id === current.id ? current : item));
+    } catch (err) {
+      setToast({ message: err.message || 'Unable to display a valid QR code.', type: 'error' });
     }
   };
 
@@ -203,10 +346,14 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
     setSelectedSessionRecords(sess);
     setRecordLoading(true);
     try {
-      const data = await api.getSessionRecords(sess.id);
+      const [data, monitor] = await Promise.all([
+        api.getSessionRecords(sess.id),
+        api.getSessionMonitor(sess.id),
+      ]);
       setRecords(data);
+      setMonitorData(monitor);
     } catch (err) {
-      console.error(err);
+      setDataError(err.message || 'Unable to load attendance records.');
     } finally {
       setRecordLoading(false);
     }
@@ -234,9 +381,62 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
   };
 
   const activeSessionsList = sessions.filter((s) => s.status === 'ACTIVE');
+  const availableYears = academicYears.filter((year) => (
+    attendanceOptions.some((option) => option.academic_year_id === year.id)
+  ));
+  const availableSemesters = semesters.filter((semester) => (
+    semester.academic_year_id === Number(form.academic_year_id)
+    && attendanceOptions.some((option) => (
+      option.academic_year_id === semester.academic_year_id
+      && option.semester_id === semester.id
+    ))
+  ));
+  const availableDivisions = divisions.filter((division) => (
+    division.academic_year_id === Number(form.academic_year_id)
+    && division.semester_id === Number(form.semester_id)
+    && attendanceOptions.some((option) => (
+      option.academic_year_id === division.academic_year_id
+      && option.semester_id === division.semester_id
+      && option.division_id === division.id
+    ))
+  ));
+  const scopedAttendanceOptions = attendanceOptions.filter((option) => (
+    option.academic_year_id === Number(form.academic_year_id)
+    && option.semester_id === Number(form.semester_id)
+    && option.division_id === Number(form.division_id)
+  ));
+  const availableBatches = batches.filter((batch) => (
+    scopedAttendanceOptions.some((option) => option.batch_id == null || option.batch_id === batch.id)
+  ));
+  const availableSubjects = subjects.filter((subject) => (
+    subject.semester_id === Number(form.semester_id)
+    && scopedAttendanceOptions.some((option) => (
+      option.subject_id === subject.id
+      && (option.batch_id == null || option.batch_id === Number(form.batch_id))
+    ))
+  ));
+  const hasValidAttendanceSelection = scopedAttendanceOptions.some((option) => (
+    option.subject_id === Number(form.subject_id)
+    && (option.batch_id == null || option.batch_id === Number(form.batch_id))
+  ));
+  const classAssignmentItems = timetables.length > 0
+    ? timetables
+    : attendanceOptions.map((option) => ({
+      ...option,
+      division_name: divisions.find((division) => division.id === option.division_id)?.name,
+      subject_name: subjects.find((subject) => subject.id === option.subject_id)?.name,
+      subject_code: subjects.find((subject) => subject.id === option.subject_id)?.code,
+    }));
+  const filteredSessions = sessions.filter((session) => (
+    (!sessionSubjectFilter || String(session.subject_id) === sessionSubjectFilter)
+    && (!sessionDateFilter || session.session_date === sessionDateFilter)
+  ));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+      {dataError && <div className="workspace-error" role="alert">
+        {dataError} <button className="btn-secondary" onClick={fetchTeacherData}>Retry</button>
+      </div>}
       {/* Overview View */}
       {activeTab === 'overview' && (
         <>
@@ -246,7 +446,7 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                 Good morning, {user.full_name || user.username} 👋
               </h1>
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem', marginTop: '0.2rem' }}>
-                Here is your teaching and attendance overview at JSPM's Bhivrabai Sawant Polytechnic.
+                Here is your teaching and attendance overview.
               </p>
             </div>
 
@@ -299,17 +499,17 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                   <div>
                     <div style={{ fontWeight: 800, fontSize: '1.1rem', color: '#ffffff' }}>Active Attendance Session Running</div>
                     <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-                      Session #{activeSessionsList[0].id} • Token: {activeSessionsList[0].session_token.slice(0, 12)}...
+                      Session #{activeSessionsList[0].id} • Dynamic QR rotates automatically
                     </div>
                   </div>
                 </div>
 
                 <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-                  <CountdownTimer expiresAt={activeSessionsList[0].expires_at} onExpire={fetchTeacherData} />
+                  <CountdownTimer expiresAt={activeSessionsList[0].qr_token_expires_at || activeSessionsList[0].expires_at} expiredLabel="QR TOKEN EXPIRED" />
                   <button
                     className="btn-primary"
                     style={{ padding: '0.45rem 0.9rem', fontSize: '0.82rem' }}
-                    onClick={() => setActiveQrSession(activeSessionsList[0])}
+                    onClick={() => handleShowQr(activeSessionsList[0])}
                   >
                     <QrCode size={16} /> Show QR Code
                   </button>
@@ -361,10 +561,11 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                             onClick={() => {
                               setForm({
                                 ...form,
-                                academic_year_id: String(t.academic_year_id || 1),
-                                semester_id: String(t.semester_id || 1),
-                                division_id: String(t.division_id || 1),
-                                subject_id: String(t.subject_id || 1),
+                                academic_year_id: String(t.academic_year_id),
+                                semester_id: String(t.semester_id),
+                                division_id: String(t.division_id),
+                                batch_id: t.batch_id ? String(t.batch_id) : '',
+                                subject_id: String(t.subject_id),
                               });
                               onNavigate('start-session');
                             }}
@@ -414,7 +615,7 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
               <button
                 className="btn-secondary"
                 style={{ fontSize: '0.8rem', padding: '0.4rem 0.85rem' }}
-                onClick={() => setActiveQrSession(activeSessionsList[0])}
+                onClick={() => handleShowQr(activeSessionsList[0])}
               >
                 View Live QR Code
               </button>
@@ -443,9 +644,11 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                         onClick={() => {
                           setForm((prev) => ({
                             ...prev,
-                            division_id: tt.division_id ? tt.division_id.toString() : prev.division_id,
-                            subject_id: tt.subject_id ? tt.subject_id.toString() : prev.subject_id,
+                            academic_year_id: String(tt.academic_year_id),
+                            semester_id: String(tt.semester_id),
+                            division_id: String(tt.division_id),
                             batch_id: tt.batch_id ? tt.batch_id.toString() : '',
+                            subject_id: String(tt.subject_id),
                           }));
                           setToast({ message: `Pre-filled ${tt.subject_name || 'Subject'} (${tt.division_name || 'Division'})`, type: 'success' });
                         }}
@@ -460,6 +663,11 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
 
               {createError && <div style={{ color: '#ef4444', fontSize: '0.85rem', marginBottom: '1rem' }}>{createError}</div>}
               {createSuccessMsg && <div style={{ color: '#34d399', fontSize: '0.85rem', marginBottom: '1rem' }}>{createSuccessMsg}</div>}
+              {attendanceOptions.length === 0 && (
+                <div className="workspace-state" role="status">
+                  No active class/subject assignments are available for this account. Ask an administrator to configure the teacher assignment or timetable.
+                </div>
+              )}
 
               <form onSubmit={handleCreateSession} style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
@@ -468,10 +676,28 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                     <select
                       className="glass-input"
                       value={form.academic_year_id}
-                      onChange={(e) => setForm({ ...form, academic_year_id: e.target.value })}
+                      disabled={availableYears.length === 0}
+                      onChange={(e) => {
+                        const academicYearId = e.target.value;
+                        const firstSemester = semesters.find((semester) => (
+                          semester.academic_year_id === Number(academicYearId)
+                          && attendanceOptions.some((option) => (
+                            option.academic_year_id === semester.academic_year_id
+                            && option.semester_id === semester.id
+                          ))
+                        ));
+                        setForm((previous) => ({
+                          ...previous,
+                          academic_year_id: academicYearId,
+                          semester_id: firstSemester ? String(firstSemester.id) : '',
+                          division_id: '',
+                          batch_id: '',
+                          subject_id: '',
+                        }));
+                      }}
                     >
                       <option value="">Select Academic Year</option>
-                      {academicYears.map((y) => (
+                      {availableYears.map((y) => (
                         <option key={y.id} value={y.id} style={{ background: '#111827' }}>{y.name}</option>
                       ))}
                     </select>
@@ -482,10 +708,17 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                     <select
                       className="glass-input"
                       value={form.semester_id}
-                      onChange={(e) => setForm({ ...form, semester_id: e.target.value })}
+                      disabled={availableSemesters.length === 0}
+                      onChange={(e) => setForm((previous) => ({
+                        ...previous,
+                        semester_id: e.target.value,
+                        division_id: '',
+                        batch_id: '',
+                        subject_id: '',
+                      }))}
                     >
                       <option value="">Select Semester</option>
-                      {semesters.map((s) => (
+                      {availableSemesters.map((s) => (
                         <option key={s.id} value={s.id} style={{ background: '#111827' }}>{s.name}</option>
                       ))}
                     </select>
@@ -498,10 +731,16 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                     <select
                       className="glass-input"
                       value={form.division_id}
-                      onChange={(e) => setForm({ ...form, division_id: e.target.value })}
+                      disabled={availableDivisions.length === 0}
+                      onChange={(e) => setForm((previous) => ({
+                        ...previous,
+                        division_id: e.target.value,
+                        batch_id: '',
+                        subject_id: '',
+                      }))}
                     >
                       <option value="">Select Division</option>
-                      {divisions.map((d) => (
+                      {availableDivisions.map((d) => (
                         <option key={d.id} value={d.id} style={{ background: '#111827' }}>{d.name}</option>
                       ))}
                     </select>
@@ -514,10 +753,16 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                     <select
                       className="glass-input"
                       value={form.batch_id}
-                      onChange={(e) => setForm({ ...form, batch_id: e.target.value })}
+                      onChange={(e) => setForm((previous) => ({
+                        ...previous,
+                        batch_id: e.target.value,
+                        subject_id: '',
+                      }))}
                     >
-                      <option value="">All Division (Whole Class)</option>
-                      {batches.map((b) => (
+                      {scopedAttendanceOptions.some((option) => option.batch_id == null) && (
+                        <option value="">All Division (Whole Class)</option>
+                      )}
+                      {availableBatches.map((b) => (
                         <option key={b.id} value={b.id} style={{ background: '#111827' }}>{b.name}</option>
                       ))}
                     </select>
@@ -530,9 +775,10 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                     className="glass-input"
                     value={form.subject_id}
                     onChange={(e) => setForm({ ...form, subject_id: e.target.value })}
+                    disabled={availableSubjects.length === 0}
                   >
                     <option value="">Select Subject</option>
-                    {subjects.map((sub) => (
+                  {availableSubjects.map((sub) => (
                       <option key={sub.id} value={sub.id} style={{ background: '#111827' }}>{sub.name} ({sub.code})</option>
                     ))}
                   </select>
@@ -548,7 +794,12 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                   />
                 </div>
 
-                <button type="submit" className="btn-primary" style={{ marginTop: '0.5rem', height: '46px' }}>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  disabled={!hasValidAttendanceSelection}
+                  style={{ marginTop: '0.5rem', height: '46px', opacity: hasValidAttendanceSelection ? 1 : 0.6 }}
+                >
                   <Play size={18} /> Launch Session & Display QR
                 </button>
               </form>
@@ -559,7 +810,7 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
               <div className="glass-card" style={{ padding: '2rem', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
                 <h3 style={{ fontSize: '1.35rem', fontWeight: 800, marginBottom: '0.5rem' }}>Live QR & Session Security</h3>
                 <div style={{ marginBottom: '1rem' }}>
-                  <CountdownTimer expiresAt={activeQrSession.expires_at} onExpire={fetchTeacherData} />
+                  <CountdownTimer expiresAt={activeQrSession.qr_token_expires_at || activeQrSession.expires_at} expiredLabel="QR TOKEN EXPIRED" />
                 </div>
 
                 <div style={{ background: '#ffffff', padding: '1.5rem', borderRadius: '20px', boxShadow: 'var(--shadow-glow)', marginBottom: '1.25rem' }}>
@@ -601,11 +852,37 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
 
           <div className="glass-card" style={{ padding: '1.75rem' }}>
             <h3 style={{ fontSize: '1.2rem', fontWeight: 700, marginBottom: '1.25rem' }}>Attendance Sessions List</h3>
+            <div className="session-filters">
+              <label>
+                Subject
+                <select
+                  className="glass-input"
+                  value={sessionSubjectFilter}
+                  onChange={(event) => setSessionSubjectFilter(event.target.value)}
+                >
+                  <option value="">All subjects</option>
+                  {subjects.map((subject) => (
+                    <option key={subject.id} value={subject.id}>{subject.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Session date
+                <input
+                  className="glass-input"
+                  type="date"
+                  value={sessionDateFilter}
+                  onChange={(event) => setSessionDateFilter(event.target.value)}
+                />
+              </label>
+            </div>
 
             {loading ? (
               <div style={{ padding: '2rem', textAlign: 'center' }}>Loading sessions...</div>
             ) : sessions.length === 0 ? (
               <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>No sessions found.</div>
+            ) : filteredSessions.length === 0 ? (
+              <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>No sessions match these filters.</div>
             ) : (
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.9rem' }}>
@@ -613,18 +890,20 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                     <tr style={{ borderBottom: '1px solid var(--border-glass)', color: 'var(--text-secondary)' }}>
                       <th style={{ padding: '0.85rem 1rem' }}>Session ID</th>
                       <th style={{ padding: '0.85rem 1rem' }}>Date</th>
+                      <th style={{ padding: '0.85rem 1rem' }}>Subject</th>
                       <th style={{ padding: '0.85rem 1rem' }}>Token</th>
                       <th style={{ padding: '0.85rem 1rem' }}>Status</th>
                       <th style={{ padding: '0.85rem 1rem' }}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {sessions.map((s) => (
+                    {filteredSessions.map((s) => (
                       <tr key={s.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                         <td style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>#{s.id}</td>
                         <td style={{ padding: '0.85rem 1rem' }}>{s.session_date}</td>
+                        <td style={{ padding: '0.85rem 1rem' }}>{s.subject_name || `Subject #${s.subject_id}`}</td>
                         <td style={{ padding: '0.85rem 1rem', fontFamily: 'monospace', color: '#818cf8' }}>
-                          {s.session_token.slice(0, 12)}...
+                          {s.session_token?.slice(0, 12)}...
                         </td>
                         <td style={{ padding: '0.85rem 1rem' }}>
                           <span className={`badge badge-${s.status.toLowerCase()}`}>{s.status}</span>
@@ -635,7 +914,7 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                               <button
                                 className="btn-secondary"
                                 style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', background: 'rgba(99, 102, 241, 0.2)' }}
-                                onClick={() => setActiveQrSession(s)}
+                                onClick={() => handleShowQr(s)}
                               >
                                 <QrCode size={14} /> Show QR
                               </button>
@@ -737,7 +1016,7 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
             <div className="glass-card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
               Loading assigned classes...
             </div>
-          ) : timetables.length === 0 && divisions.length === 0 ? (
+          ) : classAssignmentItems.length === 0 ? (
             <div className="glass-card" style={{ padding: '3.5rem 2rem', textAlign: 'center', borderRadius: '20px' }}>
               <div style={{
                 width: '64px', height: '64px', borderRadius: '50%',
@@ -754,11 +1033,11 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}>
-              {(timetables.length > 0 ? timetables : divisions).map((item, idx) => {
-                const subName = item.subject_name || item.name || `Class Assignment #${idx + 1}`;
-                const divName = item.division_name || (item.name ? `Division ${item.name}` : 'General Division');
-                const subCode = item.subject_code || 'CS501';
-                const dayName = item.day_of_week || 'Mon - Fri';
+              {classAssignmentItems.map((item) => {
+                const subName = item.subject_name || item.name || `Subject #${item.subject_id}`;
+                const divName = item.division_name || (item.division_id ? `Division #${item.division_id}` : 'Division not specified');
+                const subCode = item.subject_code || `SUB-${item.subject_id}`;
+                const dayName = item.day_of_week || 'Timetable not configured';
 
                 return (
                   <div key={item.id || idx} className="glass-card" style={{
@@ -788,7 +1067,11 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.75rem' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                           <Clock size={15} color="var(--text-muted)" />
-                          <span>Schedule: <strong>{dayName}</strong> ({item.start_time || '09:00'} - {item.end_time || '10:00'})</span>
+                          <span>
+                            {item.start_time
+                              ? <>Schedule: <strong>{dayName}</strong> ({item.start_time} - {item.end_time})</>
+                              : 'Teacher assignment'}
+                          </span>
                         </div>
                         {item.room_number && (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -804,8 +1087,11 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                       onClick={() => {
                         setForm((prev) => ({
                           ...prev,
-                          division_id: item.division_id || prev.division_id || '',
-                          subject_id: item.subject_id || prev.subject_id || '',
+                          academic_year_id: String(item.academic_year_id),
+                          semester_id: String(item.semester_id),
+                          division_id: String(item.division_id),
+                          batch_id: item.batch_id ? String(item.batch_id) : '',
+                          subject_id: String(item.subject_id),
                         }));
                         onNavigate('start-session');
                       }}
@@ -885,14 +1171,14 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                                   {slot.start_time} - {slot.end_time}
                                 </span>
                                 <span className="badge badge-present" style={{ fontSize: '0.72rem' }}>
-                                  {slot.subject_code || 'CS501'}
+                                  {slot.subject_code || `SUB-${slot.subject_id}`}
                                 </span>
                               </div>
                               <div style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--text-primary)' }}>
-                                {slot.subject_name || 'Subject Slot'}
+                                {slot.subject_name || `Subject #${slot.subject_id}`}
                               </div>
                               <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                                Division: <strong>{slot.division_name || 'A'}</strong> {slot.batch_name ? `• Batch ${slot.batch_name}` : ''}
+                                Division: <strong>{slot.division_name || `#${slot.division_id}`}</strong> {slot.batch_name ? `• Batch ${slot.batch_name}` : ''}
                               </div>
                             </div>
 
@@ -901,8 +1187,11 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                               onClick={() => {
                                 setForm((prev) => ({
                                   ...prev,
-                                  division_id: slot.division_id || prev.division_id || '',
-                                  subject_id: slot.subject_id || prev.subject_id || '',
+                                  academic_year_id: String(slot.academic_year_id),
+                                  semester_id: String(slot.semester_id),
+                                  division_id: String(slot.division_id),
+                                  batch_id: slot.batch_id ? String(slot.batch_id) : '',
+                                  subject_id: String(slot.subject_id),
                                 }));
                                 onNavigate('start-session');
                               }}
@@ -941,7 +1230,7 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                   type="number"
                   className="glass-input"
                   style={{ width: '80px', padding: '0.4rem 0.6rem' }}
-                  value={threshold}
+                  value={threshold ?? ''}
                   onChange={(e) => setThreshold(e.target.value)}
                 />
                 <button className="btn-primary" style={{ padding: '0.4rem 0.85rem' }} onClick={fetchTeacherData}>
@@ -973,11 +1262,11 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                       <td style={{ padding: '0.85rem 1rem', fontWeight: 700 }}>{st.full_name}</td>
                       <td style={{ padding: '0.85rem 1rem', color: 'var(--text-secondary)' }}>{st.email}</td>
                       <td style={{ padding: '0.85rem 1rem' }}>{st.attended_sessions} / {st.total_sessions}</td>
-                      <td style={{ padding: '0.85rem 1rem', fontWeight: 800, color: st.attendance_percentage < 60 ? '#f87171' : '#fbbf24' }}>
+                      <td style={{ padding: '0.85rem 1rem', fontWeight: 800, color: st.attendance_percentage < threshold * 0.8 ? '#f87171' : '#fbbf24' }}>
                         {st.attendance_percentage}%
                       </td>
                       <td style={{ padding: '0.85rem 1rem' }}>
-                        <RiskBadge percentage={st.attendance_percentage} />
+                        <RiskBadge percentage={st.attendance_percentage} requiredPercentage={threshold} />
                       </td>
                     </tr>
                   ))}
@@ -1008,11 +1297,31 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
 
             {recordLoading ? (
               <div style={{ textAlign: 'center', padding: '2rem' }}>Loading student records...</div>
-            ) : records.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-                No attendance marked yet for this session.
-              </div>
             ) : (
+              <>
+                {monitorData && (
+                  <div className="qr-monitor-summary">
+                    <div><strong>{monitorData.total_enrolled}</strong><span>Enrolled</span></div>
+                    <div><strong>{monitorData.present_count}</strong><span>Present</span></div>
+                    <div><strong>{monitorData.absent_count}</strong><span>Absent</span></div>
+                    <div><strong>{monitorData.not_marked_count}</strong><span>Not marked</span></div>
+                    <div><strong>{monitorData.attendance_percentage}%</strong><span>Attendance</span></div>
+                  </div>
+                )}
+                <label className="qr-monitor-search">
+                  <Search size={16} />
+                  <input
+                    className="glass-input"
+                    value={studentSearch}
+                    onChange={(event) => setStudentSearch(event.target.value)}
+                    placeholder="Search roster by name or roll number"
+                  />
+                </label>
+                {!monitorData?.students?.length ? (
+              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
+                No enrolled students were found for this session.
+              </div>
+                ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.88rem' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border-glass)', color: 'var(--text-secondary)' }}>
@@ -1024,16 +1333,20 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                   </tr>
                 </thead>
                 <tbody>
-                  {records.map((r) => (
-                    <tr key={r.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                      <td style={{ padding: '0.75rem', fontWeight: 600 }}>{r.student_roll_number || '-'}</td>
-                      <td style={{ padding: '0.75rem', fontWeight: 700 }}>{r.student_full_name || `Student #${r.student_id}`}</td>
+                  {monitorData.students
+                    .filter((student) => `${student.full_name} ${student.roll_number}`.toLowerCase().includes(studentSearch.toLowerCase()))
+                    .map((student) => {
+                      const r = records.find((record) => record.student_id === student.student_id);
+                      return (
+                    <tr key={student.student_id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                      <td style={{ padding: '0.75rem', fontWeight: 600 }}>{student.roll_number}</td>
+                      <td style={{ padding: '0.75rem', fontWeight: 700 }}>{student.full_name}</td>
                       <td style={{ padding: '0.75rem' }}>
-                        <span className={`badge badge-${r.status.toLowerCase()}`}>{r.status}</span>
+                        <span className={`badge badge-${student.status.toLowerCase()}`}>{student.status.replace('_', ' ')}</span>
                       </td>
-                      <td style={{ padding: '0.75rem', color: 'var(--text-muted)' }}>{r.source}</td>
+                      <td style={{ padding: '0.75rem', color: 'var(--text-muted)' }}>{r?.source || '—'}</td>
                       <td style={{ padding: '0.75rem' }}>
-                        <button
+                        {r && <button
                           className="btn-secondary"
                           style={{ padding: '0.25rem 0.65rem', fontSize: '0.75rem' }}
                           onClick={() => {
@@ -1042,12 +1355,15 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                           }}
                         >
                           <Edit3 size={12} /> Audit Override
-                        </button>
+                        </button>}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -1099,7 +1415,7 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
           <div className="glass-card" style={{ maxWidth: '420px', width: '100%', padding: '2rem', textAlign: 'center' }}>
             <h3 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '0.5rem' }}>Live QR Session</h3>
             <div style={{ marginBottom: '1rem' }}>
-              <CountdownTimer expiresAt={activeQrSession.expires_at} onExpire={fetchTeacherData} />
+              <CountdownTimer expiresAt={activeQrSession.qr_token_expires_at || activeQrSession.expires_at} expiredLabel="QR TOKEN EXPIRED" />
             </div>
 
             <div style={{ background: '#ffffff', padding: '1.5rem', borderRadius: '16px', display: 'inline-block', marginBottom: '1.25rem' }}>

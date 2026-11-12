@@ -2,6 +2,10 @@ import React from 'react';
 import { Radio, Shield, UserCheck, GraduationCap, LogOut, Menu, Activity, Sun, Moon, Bell } from 'lucide-react';
 
 export default function Header({ currentUser, onLogout, toggleSidebar, isMobile, theme = 'dark', onToggleTheme }) {
+  const displayName = currentUser.student_profile?.full_name
+    || currentUser.teacher_profile?.full_name
+    || currentUser.full_name
+    || currentUser.username;
   const renderRoleBadge = () => {
     switch (currentUser.role) {
       case 'ADMIN':
@@ -75,13 +79,10 @@ export default function Header({ currentUser, onLogout, toggleSidebar, isMobile,
               </div>
               <div>
                 <div style={{ fontSize: '1.05rem', fontWeight: 800, letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  JSPM's Bhivrabai Sawant Polytechnic
-                  <span style={{ fontSize: '0.65rem', background: 'rgba(52, 211, 153, 0.15)', color: '#34d399', padding: '0.1rem 0.4rem', borderRadius: '4px', border: '1px solid rgba(52, 211, 153, 0.3)' }}>
-                    Pune
-                  </span>
+                  Shri Vaishnav Vidyapeeth Vishwavidyalaya
                 </div>
                 <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                  <Activity size={10} color="#10b981" /> Computer Engineering Dept • {new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                  <Activity size={10} color="#10b981" /> Attendance & Academic Portal • {new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                 </div>
               </div>
             </div>
@@ -124,7 +125,7 @@ export default function Header({ currentUser, onLogout, toggleSidebar, isMobile,
               borderRadius: '9999px',
             }}>
               <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
-                {currentUser.full_name || currentUser.username}
+                {displayName}
               </span>
               {renderRoleBadge()}
             </div>
@@ -155,7 +156,7 @@ export default function Header({ currentUser, onLogout, toggleSidebar, isMobile,
         fontWeight: 500,
       }}>
         <Bell size={13} color="#3b82f6" />
-        <span><strong>JSPM Campus Notice:</strong> Mid-Term Attendance Assessment Deadline is 25th August • Minimum 75% attendance mandatory.</span>
+        <span>Academic attendance and curriculum information is shown from your account data.</span>
       </div>
     </>
   );

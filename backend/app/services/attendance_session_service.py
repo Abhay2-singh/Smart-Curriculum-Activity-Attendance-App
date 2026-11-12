@@ -1,16 +1,18 @@
 import secrets
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_
 
-from app.models.attendance import AttendanceSession
+from app.models.attendance import AttendanceRecord, AttendanceSession
 from app.models.academic import AcademicYear, Semester, Division, Batch
+from app.core.config import settings
 from app.models.subject import Subject
-from app.models.profiles import Teacher
+from app.models.profiles import Student, Teacher
 from app.models.timetable import Timetable
-from app.models.enums import SessionStatus
+from app.models.enums import AttendanceStatus, SessionStatus, UserRole
+from app.models.user import User
 from app.schemas.attendance_session import AttendanceSessionCreate
 
 
@@ -58,27 +60,32 @@ def create_attendance_session(db: Session, data: AttendanceSessionCreate) -> Att
         )
 
     # Validate foreign keys
-    if not db.get(AcademicYear, data.academic_year_id):
+    academic_year = db.get(AcademicYear, data.academic_year_id)
+    if not academic_year:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Academic year with ID {data.academic_year_id} does not exist"
         )
-    if not db.get(Semester, data.semester_id):
+    semester = db.get(Semester, data.semester_id)
+    if not semester:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Semester with ID {data.semester_id} does not exist"
         )
-    if not db.get(Division, data.division_id):
+    division = db.get(Division, data.division_id)
+    if not division:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Division with ID {data.division_id} does not exist"
         )
-    if data.batch_id is not None and not db.get(Batch, data.batch_id):
+    batch = db.get(Batch, data.batch_id) if data.batch_id is not None else None
+    if data.batch_id is not None and not batch:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Batch with ID {data.batch_id} does not exist"
         )
-    if not db.get(Subject, data.subject_id):
+    subject = db.get(Subject, data.subject_id)
+    if not subject:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Subject with ID {data.subject_id} does not exist"
@@ -87,6 +94,24 @@ def create_attendance_session(db: Session, data: AttendanceSessionCreate) -> Att
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Teacher with ID {data.teacher_id} does not exist"
+        )
+
+    if semester.academic_year_id != academic_year.id or (
+        division.academic_year_id != academic_year.id or division.semester_id != semester.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Academic year, semester, and division must belong to the same academic period"
+        )
+    if batch is not None and batch.division_id != division.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch does not belong to the selected division"
+        )
+    if subject.semester_id != semester.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Subject does not belong to the selected semester"
         )
     if data.timetable_id is not None and not db.get(Timetable, data.timetable_id):
         raise HTTPException(
@@ -120,6 +145,11 @@ def create_attendance_session(db: Session, data: AttendanceSessionCreate) -> Att
         )
 
     token = secrets.token_urlsafe(32)
+    session_expiry = exp_dt
+    token_expiry = min(
+        now_utc + timedelta(seconds=settings.ATTENDANCE_QR_TOKEN_TTL_SECONDS),
+        session_expiry,
+    )
 
     session_obj = AttendanceSession(
         session_token=token,
@@ -134,9 +164,56 @@ def create_attendance_session(db: Session, data: AttendanceSessionCreate) -> Att
         start_time=data.start_time,
         end_time=data.end_time,
         expires_at=data.expires_at,
+        qr_token_expires_at=token_expiry,
         status=SessionStatus.ACTIVE
     )
     db.add(session_obj)
+    db.commit()
+    db.refresh(session_obj)
+    return session_obj
+
+
+def refresh_attendance_session_token(db: Session, session_id: int) -> AttendanceSession:
+    now_utc = _get_utc_now()
+    session_obj = db.execute(
+        select(AttendanceSession)
+        .where(AttendanceSession.id == session_id)
+        .with_for_update()
+    ).scalars().first()
+    if not session_obj:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attendance session not found")
+
+    session_expiry = session_obj.expires_at
+    if session_expiry.tzinfo is None:
+        session_expiry = session_expiry.replace(tzinfo=timezone.utc)
+    if session_obj.status != SessionStatus.ACTIVE or session_expiry <= now_utc:
+        if session_obj.status == SessionStatus.ACTIVE:
+            session_obj.status = SessionStatus.EXPIRED
+            db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Attendance session is no longer active",
+        )
+
+    current_token_expiry = session_obj.qr_token_expires_at or session_expiry
+    if current_token_expiry.tzinfo is None:
+        current_token_expiry = current_token_expiry.replace(tzinfo=timezone.utc)
+    refresh_window = max(
+        settings.ATTENDANCE_QR_TOKEN_TTL_SECONDS
+        - settings.ATTENDANCE_QR_REFRESH_INTERVAL_SECONDS,
+        0,
+    )
+    if current_token_expiry - now_utc > timedelta(seconds=refresh_window + 2):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="QR token refresh requested too soon",
+        )
+
+    session_obj.session_token = secrets.token_urlsafe(32)
+    session_obj.qr_token_expires_at = min(
+        now_utc + timedelta(seconds=settings.ATTENDANCE_QR_TOKEN_TTL_SECONDS),
+        session_expiry,
+    )
     db.commit()
     db.refresh(session_obj)
     return session_obj
@@ -232,3 +309,79 @@ def cancel_attendance_session(db: Session, session_id: int) -> AttendanceSession
     db.commit()
     db.refresh(session_obj)
     return session_obj
+
+
+def get_attendance_session_monitor(
+    db: Session, session_id: int, current_user: User
+) -> dict:
+    session_obj = get_attendance_session(db, session_id)
+    if current_user.role == UserRole.TEACHER:
+        if not current_user.teacher_profile or session_obj.teacher_id != current_user.teacher_profile.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Teachers can only monitor their own attendance sessions",
+            )
+
+    roster_query = select(Student).where(
+        Student.division_id == session_obj.division_id,
+        Student.academic_year_id == session_obj.academic_year_id,
+        Student.semester_id == session_obj.semester_id,
+        Student.academic_class_id == session_obj.division.academic_class_id,
+        Student.is_active.is_(True),
+    )
+    if session_obj.batch_id is not None:
+        roster_query = roster_query.where(Student.batch_id == session_obj.batch_id)
+    roster = list(db.execute(roster_query.order_by(Student.roll_number)).scalars())
+
+    records = list(
+        db.execute(
+            select(AttendanceRecord).where(
+                AttendanceRecord.attendance_session_id == session_obj.id
+            )
+        ).scalars()
+    )
+    records_by_student = {record.student_id: record for record in records}
+    roster_ids = {student.id for student in roster}
+    records_by_student = {
+        student_id: record
+        for student_id, record in records_by_student.items()
+        if student_id in roster_ids
+    }
+    present_count = sum(
+        record.status == AttendanceStatus.PRESENT for record in records
+    )
+    closed = session_obj.status in (SessionStatus.CLOSED, SessionStatus.EXPIRED)
+    students = []
+    for student in roster:
+        record = records_by_student.get(student.id)
+        student_status = (
+            record.status.value
+            if record
+            else "ABSENT" if closed else "NOT_MARKED"
+        )
+        students.append(
+            {
+                "student_id": student.id,
+                "roll_number": student.roll_number,
+                "full_name": student.full_name,
+                "status": student_status,
+                "marked_at": record.marked_at if record else None,
+            }
+        )
+
+    total_enrolled = len(roster)
+    absent_count = sum(student["status"] == "ABSENT" for student in students)
+    not_marked_count = sum(
+        student["status"] == "NOT_MARKED" for student in students
+    )
+    return {
+        "session_id": session_obj.id,
+        "total_enrolled": total_enrolled,
+        "present_count": present_count,
+        "absent_count": absent_count,
+        "not_marked_count": not_marked_count,
+        "attendance_percentage": round(present_count * 100 / total_enrolled, 2)
+        if total_enrolled
+        else 0.0,
+        "students": students,
+    }

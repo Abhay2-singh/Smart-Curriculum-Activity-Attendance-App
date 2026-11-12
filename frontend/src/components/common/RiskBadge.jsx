@@ -1,28 +1,25 @@
 import React from 'react';
 import { ShieldCheck, AlertTriangle, ShieldAlert } from 'lucide-react';
 
-export default function RiskBadge({ percentage, showText = true, size = 'md' }) {
-  let tier = 'SAFE';
+export default function RiskBadge({ percentage, requiredPercentage = 75, showText = true, size = 'md' }) {
   let color = '#34d399';
   let bg = 'rgba(16, 185, 129, 0.15)';
   let border = 'rgba(16, 185, 129, 0.3)';
   let icon = ShieldCheck;
   let label = 'SAFE';
 
-  if (percentage < 60) {
-    tier = 'CRITICAL';
+  if (percentage < requiredPercentage * 0.8) {
     color = '#f87171';
     bg = 'rgba(239, 68, 68, 0.15)';
     border = 'rgba(239, 68, 68, 0.3)';
     icon = ShieldAlert;
     label = 'CRITICAL DEFAULTER';
-  } else if (percentage < 75) {
-    tier = 'AT_RISK';
+  } else if (percentage < requiredPercentage) {
     color = '#fbbf24';
     bg = 'rgba(245, 158, 11, 0.15)';
     border = 'rgba(245, 158, 11, 0.3)';
     icon = AlertTriangle;
-    label = 'AT RISK (<75%)';
+    label = `AT RISK (<${requiredPercentage}%)`;
   }
 
   const IconComp = icon;

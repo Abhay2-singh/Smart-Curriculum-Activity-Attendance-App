@@ -427,20 +427,28 @@ def update_academic_class_status(db: Session, class_id: int, is_active: bool) ->
 # ==================================================
 
 def create_division(db: Session, data: DivisionCreate) -> Division:
-    if not db.get(AcademicClass, data.academic_class_id):
+    academic_class = db.get(AcademicClass, data.academic_class_id)
+    if not academic_class:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Academic class with ID {data.academic_class_id} does not exist"
         )
-    if not db.get(AcademicYear, data.academic_year_id):
+    academic_year = db.get(AcademicYear, data.academic_year_id)
+    if not academic_year:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Academic year with ID {data.academic_year_id} does not exist"
         )
-    if not db.get(Semester, data.semester_id):
+    semester = db.get(Semester, data.semester_id)
+    if not semester:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Semester with ID {data.semester_id} does not exist"
+        )
+    if semester.academic_year_id != academic_year.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Semester must belong to the selected academic year"
         )
 
     existing = db.execute(
@@ -802,30 +810,53 @@ def update_subject_status(db: Session, subject_id: int, is_active: bool) -> Subj
 def create_class_subject_assignment(
     db: Session, data: ClassSubjectAssignmentCreate
 ) -> ClassSubjectAssignment:
-    if not db.get(AcademicClass, data.academic_class_id):
+    academic_class = db.get(AcademicClass, data.academic_class_id)
+    if not academic_class:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Academic class with ID {data.academic_class_id} does not exist"
         )
-    if data.division_id is not None and not db.get(Division, data.division_id):
+    division = db.get(Division, data.division_id) if data.division_id is not None else None
+    if data.division_id is not None and not division:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Division with ID {data.division_id} does not exist"
         )
-    if not db.get(Subject, data.subject_id):
+    subject = db.get(Subject, data.subject_id)
+    if not subject:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Subject with ID {data.subject_id} does not exist"
         )
-    if not db.get(AcademicYear, data.academic_year_id):
+    academic_year = db.get(AcademicYear, data.academic_year_id)
+    if not academic_year:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Academic year with ID {data.academic_year_id} does not exist"
         )
-    if not db.get(Semester, data.semester_id):
+    semester = db.get(Semester, data.semester_id)
+    if not semester:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Semester with ID {data.semester_id} does not exist"
+        )
+    if (
+        semester.academic_year_id != academic_year.id
+        or subject.semester_id != semester.id
+        or subject.department_id != academic_class.department_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Class, subject, academic year, and semester must be compatible"
+        )
+    if division is not None and (
+        division.academic_class_id != academic_class.id
+        or division.academic_year_id != academic_year.id
+        or division.semester_id != semester.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Division must belong to the selected class and academic period"
         )
 
     # Check unique constraint (academic_class_id, division_id, subject_id, academic_year_id, semester_id)
@@ -993,35 +1024,64 @@ def create_teacher_assignment(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Teacher with ID {data.teacher_id} does not exist"
         )
-    if not db.get(Subject, data.subject_id):
+    subject = db.get(Subject, data.subject_id)
+    if not subject:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Subject with ID {data.subject_id} does not exist"
         )
-    if not db.get(AcademicClass, data.academic_class_id):
+    academic_class = db.get(AcademicClass, data.academic_class_id)
+    if not academic_class:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Academic class with ID {data.academic_class_id} does not exist"
         )
-    if data.division_id is not None and not db.get(Division, data.division_id):
+    division = db.get(Division, data.division_id) if data.division_id is not None else None
+    if data.division_id is not None and not division:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Division with ID {data.division_id} does not exist"
         )
-    if data.batch_id is not None and not db.get(Batch, data.batch_id):
+    batch = db.get(Batch, data.batch_id) if data.batch_id is not None else None
+    if data.batch_id is not None and not batch:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Batch with ID {data.batch_id} does not exist"
         )
-    if not db.get(AcademicYear, data.academic_year_id):
+    academic_year = db.get(AcademicYear, data.academic_year_id)
+    if not academic_year:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Academic year with ID {data.academic_year_id} does not exist"
         )
-    if not db.get(Semester, data.semester_id):
+    semester = db.get(Semester, data.semester_id)
+    if not semester:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Semester with ID {data.semester_id} does not exist"
+        )
+    if (
+        semester.academic_year_id != academic_year.id
+        or subject.semester_id != semester.id
+        or subject.department_id != academic_class.department_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Class, subject, academic year, and semester must be compatible"
+        )
+    if division is not None and (
+        division.academic_class_id != academic_class.id
+        or division.academic_year_id != academic_year.id
+        or division.semester_id != semester.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Division must belong to the selected class and academic period"
+        )
+    if batch is not None and (division is None or batch.division_id != division.id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A batch must belong to the selected division"
         )
 
     # Check unique constraint (teacher_id, subject_id, academic_class_id, division_id, batch_id, academic_year_id, semester_id)

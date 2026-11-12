@@ -6,6 +6,13 @@ from app.models.subject import Subject
 from app.models.assignments import ClassSubjectAssignment, TeacherAssignment
 from app.models.timetable import Timetable
 from app.models.attendance import AttendanceSession, AttendanceRecord, AttendanceCorrection
+from app.models.learning import (
+    CurriculumUnit, CurriculumTopic, StudentTopicProgress, Assignment,
+    AssignmentSubmission, Assessment, AssessmentResult, StudentActivity,
+    ActivityParticipation, AcademicAlert, AcademicRiskRecord, AIRecommendation,
+    AcademicDocument, AcademicDocumentChunk, AcademicAssistantMessage, Notification,
+)
+from app.models.academic_gap import AcademicGapSnapshot
 
 __all__ = [
     "UserRole",
@@ -29,4 +36,21 @@ __all__ = [
     "AttendanceSession",
     "AttendanceRecord",
     "AttendanceCorrection",
+    "CurriculumUnit",
+    "CurriculumTopic",
+    "StudentTopicProgress",
+    "Assignment",
+    "AssignmentSubmission",
+    "Assessment",
+    "AssessmentResult",
+    "StudentActivity",
+    "ActivityParticipation",
+    "AcademicAlert",
+    "AcademicRiskRecord",
+    "AIRecommendation",
+    "AcademicDocument",
+    "AcademicDocumentChunk",
+    "AcademicAssistantMessage",
+    "Notification",
+    "AcademicGapSnapshot",
 ]

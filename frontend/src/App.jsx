@@ -6,7 +6,14 @@ import AdminDashboard from './components/AdminDashboard';
 import TeacherDashboard from './components/TeacherDashboard';
 import StudentDashboard from './components/StudentDashboard';
 import SplashScreen from './components/SplashScreen';
-import { getStoredUser, removeAuthToken, getAuthToken } from './api';
+import LearningWorkspace from './components/common/LearningWorkspace';
+import { removeAuthToken, getAuthToken, api, setStoredUser } from './api';
+
+const roleTabs = {
+  ADMIN: new Set(['overview', 'users', 'academic', 'timetable', 'defaulters', 'audit', 'curriculum', 'assignments', 'assessments', 'risks', 'documents', 'notifications', 'profile']),
+  TEACHER: new Set(['overview', 'my-classes', 'timetable', 'start-session', 'live-monitor', 'records', 'corrections', 'reports', 'curriculum', 'assignments', 'submissions', 'assessments', 'risks', 'activities', 'documents', 'notifications', 'profile']),
+  STUDENT: new Set(['overview', 'mark-attendance', 'subject-breakdown', 'risk-calculator', 'timetable', 'history', 'curriculum', 'assignments', 'assessments', 'activities', 'progress', 'assistant', 'notifications', 'profile']),
+};
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -14,6 +21,7 @@ export default function App() {
   const [sidebarOpenMobile, setSidebarOpenMobile] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
+  const [authLoading, setAuthLoading] = useState(true);
   const [theme, setTheme] = useState(() => localStorage.getItem('jspm_theme') || 'dark');
 
   useEffect(() => {
@@ -36,17 +44,34 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let active = true;
     const token = getAuthToken();
-    const user = getStoredUser();
-    if (token && user) {
-      setCurrentUser(user);
-    }
-
     const handleUnauthorized = () => {
       setCurrentUser(null);
+      setAuthLoading(false);
     };
     window.addEventListener('unauthorized', handleUnauthorized);
-    return () => window.removeEventListener('unauthorized', handleUnauthorized);
+    if (!token) {
+      setAuthLoading(false);
+    } else {
+      api.getMe()
+        .then((user) => {
+          if (!active) return;
+          setStoredUser(user);
+          setCurrentUser(user);
+        })
+        .catch(() => {
+          removeAuthToken();
+          if (active) setCurrentUser(null);
+        })
+        .finally(() => {
+          if (active) setAuthLoading(false);
+        });
+    }
+    return () => {
+      active = false;
+      window.removeEventListener('unauthorized', handleUnauthorized);
+    };
   }, []);
 
   // Hash-based URL routing sync
@@ -55,8 +80,12 @@ export default function App() {
 
     const handleHashChange = () => {
       const hash = window.location.hash.replace('#/', '').replace('#', '');
-      if (hash) {
+      const allowedTabs = roleTabs[currentUser.role];
+      if (hash && allowedTabs?.has(hash)) {
         setActiveTab(hash);
+      } else {
+        setActiveTab('overview');
+        if (hash) window.location.hash = '#/overview';
       }
     };
 
@@ -66,6 +95,11 @@ export default function App() {
   }, [currentUser]);
 
   const handleSelectTab = (tabId) => {
+    if (!roleTabs[currentUser?.role]?.has(tabId)) {
+      setActiveTab('overview');
+      window.location.hash = '#/overview';
+      return;
+    }
     setActiveTab(tabId);
     window.location.hash = `#/${tabId}`;
   };
@@ -88,10 +122,12 @@ export default function App() {
         <SplashScreen onComplete={() => setShowSplash(false)} />
       )}
 
-      {!currentUser ? (
+      {authLoading ? (
+        <div className="app-loading" role="status">Restoring your secure session…</div>
+      ) : !currentUser ? (
         <LoginView onLoginSuccess={handleLoginSuccess} />
       ) : (
-        <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-main)', color: 'var(--text-primary)' }}>
+        <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
           {/* Top App Header */}
           <Header
             currentUser={currentUser}
@@ -112,12 +148,13 @@ export default function App() {
               isOpen={sidebarOpenMobile}
               isMobile={isMobile}
               onCloseMobile={() => setSidebarOpenMobile(false)}
+              onLogout={handleLogout}
             />
 
             {/* Dynamic Portal Sub-View */}
             <main style={{ flex: 1, padding: '2rem 1.5rem', minWidth: 0 }}>
               {currentUser.role === 'ADMIN' && (
-                <AdminDashboard activeTab={activeTab} onNavigate={handleSelectTab} />
+                <AdminDashboard user={currentUser} activeTab={activeTab} onNavigate={handleSelectTab} />
               )}
 
               {currentUser.role === 'TEACHER' && (
@@ -127,6 +164,7 @@ export default function App() {
               {currentUser.role === 'STUDENT' && (
                 <StudentDashboard user={currentUser} activeTab={activeTab} onNavigate={handleSelectTab} />
               )}
+              <LearningWorkspace role={currentUser.role} user={currentUser} activeTab={activeTab} />
             </main>
           </div>
 
@@ -139,7 +177,7 @@ export default function App() {
             borderTop: '1px solid var(--border-glass)',
             background: 'rgba(15, 23, 42, 0.4)',
           }}>
-            © 2026 JSPM's Bhivrabai Sawant Polytechnic • Department of Computer Engineering • Pune, Maharashtra
+            © 2026 Shri Vaishnav Vidyapeeth Vishwavidyalaya • Attendance & Academic Portal
           </footer>
         </div>
       )}

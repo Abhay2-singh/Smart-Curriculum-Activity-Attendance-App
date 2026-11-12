@@ -41,7 +41,9 @@ def authenticate_user(db: Session, identifier: str, password: str) -> User:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not verify_password(password, user.password_hash):
+    is_valid = verify_password(password, user.password_hash)
+
+    if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username/email or password",

@@ -32,6 +32,9 @@ def create_initial_admin() -> None:
             print(f"[NOTICE] A user with username '{username}' or email '{email}' already exists. Skipping creation.")
             return
 
+        if not password:
+            raise ValueError("Set INIT_ADMIN_PASSWORD in the environment before creating an admin account.")
+
         # Create new initial admin account
         hashed_pwd = hash_password(password)
         admin_user = User(

@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.models.timetable import Timetable
-from app.models.academic import AcademicYear, Semester, Division, Batch
+from app.models.academic import AcademicYear, Semester, Division, Batch, AcademicClass
 from app.models.subject import Subject
 from app.models.profiles import Teacher
 from app.models.enums import DayOfWeek
@@ -19,27 +19,32 @@ def create_timetable(db: Session, data: TimetableCreate) -> Timetable:
         )
 
     # Validate foreign keys
-    if not db.get(AcademicYear, data.academic_year_id):
+    academic_year = db.get(AcademicYear, data.academic_year_id)
+    if not academic_year:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Academic year with ID {data.academic_year_id} does not exist"
         )
-    if not db.get(Semester, data.semester_id):
+    semester = db.get(Semester, data.semester_id)
+    if not semester:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Semester with ID {data.semester_id} does not exist"
         )
-    if not db.get(Division, data.division_id):
+    division = db.get(Division, data.division_id)
+    if not division:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Division with ID {data.division_id} does not exist"
         )
-    if data.batch_id is not None and not db.get(Batch, data.batch_id):
+    batch = db.get(Batch, data.batch_id) if data.batch_id is not None else None
+    if data.batch_id is not None and not batch:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Batch with ID {data.batch_id} does not exist"
         )
-    if not db.get(Subject, data.subject_id):
+    subject = db.get(Subject, data.subject_id)
+    if not subject:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Subject with ID {data.subject_id} does not exist"
@@ -48,6 +53,23 @@ def create_timetable(db: Session, data: TimetableCreate) -> Timetable:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Teacher with ID {data.teacher_id} does not exist"
+        )
+    academic_class = db.get(AcademicClass, division.academic_class_id)
+    if (
+        semester.academic_year_id != academic_year.id
+        or division.academic_year_id != academic_year.id
+        or division.semester_id != semester.id
+        or subject.semester_id != semester.id
+        or subject.department_id != academic_class.department_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Class, subject, academic year, and semester must be compatible"
+        )
+    if batch is not None and batch.division_id != division.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch does not belong to the selected division"
         )
 
     entry = Timetable(

@@ -14,10 +14,16 @@ import {
   History,
   Calculator,
   Layers,
-  Sparkles
+  Sparkles,
+  FileText,
+  Bell,
+  UserRound,
+  LogOut,
+  ClipboardList,
+  Activity,
 } from 'lucide-react';
 
-export default function Sidebar({ role, activeTab, onSelectTab, isOpen, isMobile, onCloseMobile }) {
+export default function Sidebar({ role, activeTab, onSelectTab, isOpen, isMobile, onCloseMobile, onLogout }) {
   const getNavItems = () => {
     switch (role) {
       case 'ADMIN':
@@ -28,6 +34,13 @@ export default function Sidebar({ role, activeTab, onSelectTab, isOpen, isMobile
           { id: 'timetable', label: 'Timetable Schedules', icon: Calendar },
           { id: 'defaulters', label: 'Defaulters & Analytics', icon: AlertTriangle },
           { id: 'audit', label: 'Audit Trail & Corrections', icon: FileCheck2 },
+          { id: 'curriculum', label: 'Curriculum Management', icon: BookOpen },
+          { id: 'assignments', label: 'Assignment Management', icon: ClipboardList },
+          { id: 'assessments', label: 'Assessment Management', icon: BarChart3 },
+          { id: 'risks', label: 'Academic Risk Reports', icon: AlertTriangle },
+          { id: 'documents', label: 'Document Management', icon: FileText },
+          { id: 'notifications', label: 'Notifications', icon: Bell },
+          { id: 'profile', label: 'Profile', icon: UserRound },
         ];
       case 'TEACHER':
         return [
@@ -39,6 +52,15 @@ export default function Sidebar({ role, activeTab, onSelectTab, isOpen, isMobile
           { id: 'records', label: 'Session Records', icon: CheckSquare },
           { id: 'corrections', label: 'Corrections & Audit', icon: FileCheck2 },
           { id: 'reports', label: 'Class Defaulter Reports', icon: BarChart3 },
+          { id: 'curriculum', label: 'Curriculum Tracking', icon: BookOpen },
+          { id: 'assignments', label: 'Assignments', icon: ClipboardList },
+          { id: 'submissions', label: 'Student Submissions', icon: FileCheck2 },
+          { id: 'assessments', label: 'Assessments', icon: BarChart3 },
+          { id: 'risks', label: 'Academic Risk Monitoring', icon: AlertTriangle },
+          { id: 'activities', label: 'Student Activities', icon: Activity },
+          { id: 'documents', label: 'Course Documents', icon: FileText },
+          { id: 'notifications', label: 'Notifications', icon: Bell },
+          { id: 'profile', label: 'Profile', icon: UserRound },
         ];
       case 'STUDENT':
         return [
@@ -48,6 +70,14 @@ export default function Sidebar({ role, activeTab, onSelectTab, isOpen, isMobile
           { id: 'risk-calculator', label: 'Smart Margin & Risk Calc', icon: Calculator, badge: 'Smart' },
           { id: 'timetable', label: 'My Timetable', icon: Calendar },
           { id: 'history', label: 'Attendance Log History', icon: History },
+          { id: 'curriculum', label: 'My Curriculum', icon: BookOpen },
+          { id: 'assignments', label: 'My Assignments', icon: ClipboardList },
+          { id: 'assessments', label: 'My Assessments', icon: BarChart3 },
+          { id: 'activities', label: 'My Activities', icon: Activity },
+          { id: 'progress', label: 'Academic Progress', icon: AlertTriangle },
+          { id: 'assistant', label: 'AI Academic Assistant', icon: Sparkles },
+          { id: 'notifications', label: 'Notifications', icon: Bell },
+          { id: 'profile', label: 'My Profile', icon: UserRound },
         ];
       default:
         return [];
@@ -162,12 +192,15 @@ export default function Sidebar({ role, activeTab, onSelectTab, isOpen, isMobile
         {/* Footer info box */}
         <div className="glass-card" style={{ padding: '0.85rem', borderRadius: '12px', marginTop: 'auto', background: 'rgba(255,255,255,0.02)' }}>
           <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-            JSPM's B. S. Polytechnic
+            Shri Vaishnav Vidyapeeth Vishwavidyalaya
           </div>
           <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-            Computer Engineering • Pune
+            Attendance & Academic Portal
           </div>
         </div>
+        <button className="btn-sidebar sidebar-logout" onClick={onLogout} type="button">
+          <LogOut size={17} /> Sign out
+        </button>
       </aside>
     </>
   );

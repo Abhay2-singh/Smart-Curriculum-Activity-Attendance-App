@@ -40,6 +40,9 @@ class AttendanceSession(Base):
     start_time: Mapped[time] = mapped_column(Time, nullable=False)
     end_time: Mapped[time] = mapped_column(Time, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    qr_token_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status: Mapped[SessionStatus] = mapped_column(
         Enum(SessionStatus), default=SessionStatus.ACTIVE, nullable=False
     )
@@ -57,6 +60,10 @@ class AttendanceSession(Base):
     attendance_records: Mapped[List["AttendanceRecord"]] = relationship(
         "AttendanceRecord", back_populates="session", cascade="all, delete-orphan"
     )
+
+    @property
+    def subject_name(self) -> Optional[str]:
+        return self.subject.name if self.subject else None
 
 
 class AttendanceRecord(Base):

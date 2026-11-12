@@ -1,28 +1,48 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Clock, ShieldAlert } from 'lucide-react';
 
-export default function CountdownTimer({ expiresAt, onExpire }) {
+export default function CountdownTimer({ expiresAt, onExpire, expiredLabel = 'SESSION EXPIRED' }) {
   const [timeLeft, setTimeLeft] = useState(0);
+  const onExpireRef = useRef(onExpire);
+  const hasExpiredRef = useRef(false);
+
+  useEffect(() => {
+    onExpireRef.current = onExpire;
+  }, [onExpire]);
 
   useEffect(() => {
     if (!expiresAt) return;
 
     const targetTime = new Date(expiresAt).getTime();
+    const initialDiff = Math.max(0, Math.floor((targetTime - Date.now()) / 1000));
+    setTimeLeft(initialDiff);
+
+    // If already expired at mount, mark as expired without triggering infinite refresh
+    if (initialDiff <= 0) {
+      hasExpiredRef.current = true;
+      return;
+    }
+
+    hasExpiredRef.current = false;
 
     const updateTimer = () => {
-      const now = new Date().getTime();
+      const now = Date.now();
       const diff = Math.max(0, Math.floor((targetTime - now) / 1000));
       setTimeLeft(diff);
 
-      if (diff <= 0 && onExpire) {
-        onExpire();
+      if (diff <= 0) {
+        if (!hasExpiredRef.current) {
+          hasExpiredRef.current = true;
+          if (onExpireRef.current) {
+            onExpireRef.current();
+          }
+        }
       }
     };
 
-    updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
-  }, [expiresAt, onExpire]);
+  }, [expiresAt]);
 
   const minutes = Math.floor(timeLeft / 60);
   const seconds = timeLeft % 60;
@@ -56,7 +76,7 @@ export default function CountdownTimer({ expiresAt, onExpire }) {
       {isExpired ? (
         <>
           <ShieldAlert size={16} />
-          <span>SESSION EXPIRED</span>
+          <span>{expiredLabel}</span>
         </>
       ) : (
         <>

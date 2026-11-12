@@ -1,3 +1,4 @@
+import os
 import sys
 import time
 import httpx
@@ -27,6 +28,12 @@ def record(endpoint_name, method, url, status, expected, passed, note=""):
 
 
 def main():
+    if os.environ.get("RUN_LIVE_API_VERIFY") != "1":
+        raise SystemExit(
+            "This script writes test data to the configured live database. "
+            "Set RUN_LIVE_API_VERIFY=1 only for a disposable test database."
+        )
+
     print("==========================================", flush=True)
     print("  LIVE API VERIFICATION FOR MODULE 1E", flush=True)
     print(f"  Target Server: {BASE_URL}", flush=True)

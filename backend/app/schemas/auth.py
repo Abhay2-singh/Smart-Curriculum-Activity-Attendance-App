@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, Field
 from app.models.enums import UserRole
 
 
@@ -10,7 +10,7 @@ class LoginRequest(BaseModel):
     Accepts either username or email as login identifier.
     """
     username: str = Field(..., description="Username or Email address", example="admin")
-    password: str = Field(..., description="User password", example="AdminPass@123")
+    password: str = Field(..., description="User password")
 
 
 from app.schemas.user import TeacherResponse, StudentResponse

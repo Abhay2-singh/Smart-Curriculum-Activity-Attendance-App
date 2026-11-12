@@ -1,6 +1,7 @@
 from datetime import date, time, datetime
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.config import settings
 from app.models.enums import SessionStatus
 
 
@@ -20,20 +21,46 @@ class AttendanceSessionCreate(BaseModel):
 
 class AttendanceSessionResponse(BaseModel):
     id: int
-    session_token: str
+    session_token: Optional[str] = None
     academic_year_id: int
     semester_id: int
     division_id: int
     batch_id: Optional[int] = None
     subject_id: int
+    subject_name: Optional[str] = None
     teacher_id: int
     timetable_id: Optional[int] = None
     session_date: date
     start_time: time
     end_time: time
     expires_at: datetime
+    qr_token_expires_at: Optional[datetime] = None
+    qr_token_ttl_seconds: int = Field(
+        default_factory=lambda: settings.ATTENDANCE_QR_TOKEN_TTL_SECONDS
+    )
+    qr_refresh_interval_seconds: int = Field(
+        default_factory=lambda: settings.ATTENDANCE_QR_REFRESH_INTERVAL_SECONDS
+    )
     status: SessionStatus
     created_at: datetime
     closed_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AttendanceMonitorStudent(BaseModel):
+    student_id: int
+    roll_number: str
+    full_name: str
+    status: str
+    marked_at: Optional[datetime] = None
+
+
+class AttendanceSessionMonitorResponse(BaseModel):
+    session_id: int
+    total_enrolled: int
+    present_count: int
+    absent_count: int
+    not_marked_count: int
+    attendance_percentage: float
+    students: list[AttendanceMonitorStudent]

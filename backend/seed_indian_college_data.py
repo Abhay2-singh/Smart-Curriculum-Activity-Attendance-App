@@ -1,7 +1,5 @@
 import sys
 from datetime import date, datetime, timedelta
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -12,19 +10,30 @@ from app.models.academic import Department, AcademicYear, Semester, AcademicClas
 from app.models.profiles import Teacher, Student
 from app.models.subject import Subject
 from app.models.assignments import ClassSubjectAssignment, TeacherAssignment
-from app.models.timetable import Timetable
 from app.models.attendance import AttendanceSession, AttendanceRecord, SessionStatus, AttendanceStatus
 
 
 def seed_data():
     """
-    Seeds realistic fictional Indian college data for JSPM's Bhivrabai Sawant Polytechnic, Pune, Maharashtra.
+    Seeds optional fictional demo data for local verification only.
     Preserves existing user test accounts required for verification scripts while decorating them with
     realistic Indian profile names.
     """
     print("=======================================================")
-    print(" SEEDING INDIAN COLLEGE DATA (JSPM's Bhivrabai Sawant Polytechnic)")
+    print(" SEEDING OPTIONAL FICTIONAL DEMO DATA")
     print("=======================================================")
+
+    required_passwords = {
+        "INIT_ADMIN_PASSWORD": settings.INIT_ADMIN_PASSWORD,
+        "SEED_TEACHER_PASSWORD": settings.SEED_TEACHER_PASSWORD,
+        "SEED_STUDENT_PASSWORD": settings.SEED_STUDENT_PASSWORD,
+    }
+    missing_passwords = [name for name, value in required_passwords.items() if not value]
+    if missing_passwords:
+        raise ValueError(
+            "Configure these environment variables before seeding: "
+            + ", ".join(missing_passwords)
+        )
 
     db = SessionLocal()
     try:
@@ -185,14 +194,14 @@ def seed_data():
             t1_user = User(
                 username="teacher1",
                 email="teacher1@attendance.com",
-                password_hash=hash_password("JSPM#Faculty2026!"),
+                password_hash=hash_password(settings.SEED_TEACHER_PASSWORD),
                 role=UserRole.TEACHER,
                 is_active=True
             )
             db.add(t1_user)
             db.flush()
         else:
-            t1_user.password_hash = hash_password("JSPM#Faculty2026!")
+            t1_user.password_hash = hash_password(settings.SEED_TEACHER_PASSWORD)
             t1_user.is_active = True
             db.flush()
 
@@ -227,11 +236,15 @@ def seed_data():
                 u = User(
                     username=un,
                     email=email,
-                    password_hash=hash_password("TeacherPass123!"),
+                    password_hash=hash_password(settings.SEED_TEACHER_PASSWORD),
                     role=UserRole.TEACHER,
                     is_active=True
                 )
                 db.add(u)
+                db.flush()
+            else:
+                u.password_hash = hash_password(settings.SEED_TEACHER_PASSWORD)
+                u.is_active = True
                 db.flush()
             t_prof = db.query(Teacher).filter(Teacher.user_id == u.id).first()
             if not t_prof:
@@ -299,11 +312,15 @@ def seed_data():
                 u = User(
                     username=un,
                     email=email,
-                    password_hash=hash_password("StudentPass123!"),
+                    password_hash=hash_password(settings.SEED_STUDENT_PASSWORD),
                     role=UserRole.STUDENT,
                     is_active=True
                 )
                 db.add(u)
+                db.flush()
+            else:
+                u.password_hash = hash_password(settings.SEED_STUDENT_PASSWORD)
+                u.is_active = True
                 db.flush()
             sp = db.query(Student).filter(Student.user_id == u.id).first()
             if not sp:
@@ -395,11 +412,8 @@ def seed_data():
 
         db.commit()
         print("[SUCCESS] Real Indian college data seeded successfully!")
-        print("  - College: JSPM's Bhivrabai Sawant Polytechnic, Pune")
-        print("  - Dept: Computer Engineering")
-        print("  - Admin: Dr. Kavita Deshmukh ('admin' / 'AdminPass@123')")
-        print("  - Teacher: Dr. Anjali Kulkarni ('teacher1' / 'JSPM#Faculty2026!')")
-        print("  - Student: Aarohi Patil ('student1' / 'StudentPass123!')")
+        print("  - Demo data seeded (fictional; do not use for real attendance).")
+        print("  - Admin, teacher, and student credentials are configured in the environment.")
         print(f"  - Total Students in Dataset: {len(student_objs)}")
 
     except Exception as e:

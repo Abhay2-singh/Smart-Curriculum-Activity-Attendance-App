@@ -1,7 +1,17 @@
+import os
 import urllib.request
 import json
+from datetime import datetime, timezone, timedelta, date
 
 BASE_URL = "http://127.0.0.1:8000/api"
+
+
+def required_environment(name):
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"{name} must be set to run the live end-to-end test")
+    return value
+
 
 def api_call(path, method="GET", data=None, token=None):
     url = f"{BASE_URL}{path}"
@@ -21,13 +31,24 @@ def api_call(path, method="GET", data=None, token=None):
         return e.code, json.loads(resp_body) if resp_body else {}
 
 def run_e2e_tests():
+    if os.environ.get("RUN_LIVE_E2E") != "1":
+        raise SystemExit(
+            "This script creates sessions and attendance in the configured live database. "
+            "Set RUN_LIVE_E2E=1 only for a disposable test database."
+        )
+
+    admin_username = required_environment("LIVE_ADMIN_USERNAME")
+    admin_password = required_environment("LIVE_ADMIN_PASSWORD")
+    teacher_username = required_environment("LIVE_TEACHER_USERNAME")
+    teacher_password = required_environment("LIVE_TEACHER_PASSWORD")
+    student_username = required_environment("LIVE_STUDENT_USERNAME")
+    student_password = required_environment("LIVE_STUDENT_PASSWORD")
+
     print("=== LIVE E2E END-TO-END WORKFLOW VERIFICATION ===")
 
     # 1. Admin Login & Data Verification
     print("\n1. Testing Admin Portal APIs...")
-    status, res = api_call("/auth/login", method="POST", data={"username": "admin", "password": "AdminPass@123"})
-    if status != 200:
-        status, res = api_call("/auth/login", method="POST", data={"username": "admin", "password": "AdminPass123!"})
+    status, res = api_call("/auth/login", method="POST", data={"username": admin_username, "password": admin_password})
     assert status == 200, f"Admin login failed: {res}"
     admin_token = res["access_token"]
     print("   [PASS] Admin Login successful")
@@ -46,7 +67,7 @@ def run_e2e_tests():
 
     # 2. Teacher Login & Session Creation
     print("\n2. Testing Teacher Portal APIs & Attendance Session Creation...")
-    status, res = api_call("/auth/login", method="POST", data={"username": "teacher1", "password": "TeacherPass123!"})
+    status, res = api_call("/auth/login", method="POST", data={"username": teacher_username, "password": teacher_password})
     assert status == 200
     teacher_token = res["access_token"]
     teacher_user = res["user"]
@@ -62,11 +83,15 @@ def run_e2e_tests():
     valid_subject = subs_res[0]
 
     # Get student1 profile first to find division_id
-    status, st_login = api_call("/auth/login", method="POST", data={"username": "student1", "password": "StudentPass123!"})
+    status, st_login = api_call("/auth/login", method="POST", data={"username": student_username, "password": student_password})
     assert status == 200
     status, st_me = api_call("/auth/me", token=st_login["access_token"])
     assert status == 200 and st_me.get("student_profile"), f"Student profile missing: {st_me}"
     student_profile = st_me["student_profile"]
+
+    now_utc = datetime.now(timezone.utc)
+    future_exp = (now_utc + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    today_str = date.today().isoformat()
 
     session_payload = {
         "academic_year_id": student_profile["academic_year_id"],
@@ -74,10 +99,10 @@ def run_e2e_tests():
         "division_id": student_profile["division_id"],
         "subject_id": valid_subject["id"],
         "teacher_id": teacher_profile_id,
-        "session_date": "2026-08-20",
+        "session_date": today_str,
         "start_time": "09:00:00",
         "end_time": "10:00:00",
-        "expires_at": "2026-08-20T23:59:59Z"
+        "expires_at": future_exp
     }
     status, session_data = api_call("/attendance-sessions", method="POST", data=session_payload, token=teacher_token)
     assert status == 201, f"Session creation failed: {session_data}"
@@ -87,7 +112,7 @@ def run_e2e_tests():
 
     # 3. Student Login & Marking Attendance
     print("\n3. Testing Student Portal APIs & QR/Token Attendance Marking...")
-    status, res = api_call("/auth/login", method="POST", data={"username": "student1", "password": "StudentPass123!"})
+    status, res = api_call("/auth/login", method="POST", data={"username": student_username, "password": student_password})
     assert status == 200
     student_token = res["access_token"]
     print("   [PASS] Student Login successful")

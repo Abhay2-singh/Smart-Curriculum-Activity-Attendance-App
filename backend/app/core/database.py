@@ -4,14 +4,16 @@ from sqlalchemy.orm import sessionmaker, DeclarativeBase, Session
 from app.core.config import settings
 
 # Create SQLAlchemy engine with pre-ping to handle stale MySQL connections
-engine = create_engine(
-    settings.database_url,
-    connect_args={
-        "ssl": {
+connect_args = {}
+if settings.DB_SSL_VERIFY:
+    connect_args["ssl"] = {
             "ssl_verify_cert": True,
             "ssl_verify_identity": True,
-        }
-    },
+    }
+
+engine = create_engine(
+    settings.database_url,
+    connect_args=connect_args,
     pool_pre_ping=True,
     pool_recycle=3600,
     echo=False,

@@ -8,6 +8,8 @@ from app.api.timetable import router as timetable_router
 from app.api.attendance_sessions import router as attendance_sessions_router
 from app.api.attendance import router as attendance_router
 from app.api.reports import router as reports_router
+from app.api.learning import router as learning_router
+from app.api.rag import router as rag_router
 
 from app.core.config import settings
 
@@ -19,16 +21,25 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# Configure CORS for deployed frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://smart-attendance-system-ecru-eight.vercel.app",
-    ],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Configure CORS using environment settings
+cors_origins = settings.allowed_origins_list
+if not cors_origins or "*" in cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 
 # Register API routes under /api
 app.include_router(health_router, prefix="/api")
@@ -39,6 +50,8 @@ app.include_router(timetable_router, prefix="/api")
 app.include_router(attendance_sessions_router, prefix="/api")
 app.include_router(attendance_router, prefix="/api")
 app.include_router(reports_router, prefix="/api")
+app.include_router(learning_router, prefix="/api")
+app.include_router(rag_router, prefix="/api")
 
 
 

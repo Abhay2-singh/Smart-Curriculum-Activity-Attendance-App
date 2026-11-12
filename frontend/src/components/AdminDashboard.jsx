@@ -27,8 +27,9 @@ import {
 import { api } from '../api';
 import RiskBadge from './common/RiskBadge';
 import Toast from './common/Toast';
+import AcademicSetup from './admin/AcademicSetup';
 
-export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
+export default function AdminDashboard({ user, activeTab = 'overview', onNavigate }) {
   // Common state
   const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -41,13 +42,18 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
   const [totalStudents, setTotalStudents] = useState(0);
   const [totalTeachers, setTotalTeachers] = useState(0);
   const [activeSessionsCount, setActiveSessionsCount] = useState(0);
+  const [totalSubjects, setTotalSubjects] = useState(0);
+  const [overviewError, setOverviewError] = useState('');
   const [defaulters, setDefaulters] = useState([]);
-  const [threshold, setThreshold] = useState(75);
+  const [threshold, setThreshold] = useState(null);
 
   // Users tab state
   const [usersList, setUsersList] = useState([]);
+  const [usersTotal, setUsersTotal] = useState(0);
+  const [usersPage, setUsersPage] = useState(1);
   const [userRoleFilter, setUserRoleFilter] = useState('');
   const [userSearch, setUserSearch] = useState('');
+  const [debouncedUserSearch, setDebouncedUserSearch] = useState('');
   const [showCreateUserModal, setShowCreateUserModal] = useState(false);
   const [createUserForm, setCreateUserForm] = useState({
     username: '',
@@ -57,6 +63,10 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
     role: 'STUDENT',
     department_id: '',
     roll_number: '',
+    student_id: '',
+    enrollment_number: '',
+    employee_id: '',
+    academic_class_id: '',
     academic_year_id: '',
     semester_id: '',
     division_id: '',
@@ -86,31 +96,40 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
   }, []);
 
   useEffect(() => {
+    const timer = setTimeout(() => setDebouncedUserSearch(userSearch), 250);
+    return () => clearTimeout(timer);
+  }, [userSearch]);
+
+  useEffect(() => {
     if (activeTab === 'users') fetchUsers();
     if (activeTab === 'academic') fetchAcademicStructure();
     if (activeTab === 'timetable') fetchTimetables();
     if (activeTab === 'defaulters') fetchDefaulters();
     if (activeTab === 'audit') fetchAuditLogs();
-  }, [activeTab, userRoleFilter, userSearch, threshold]);
+  }, [activeTab, userRoleFilter, debouncedUserSearch, threshold, usersPage]);
 
   const fetchInitialData = async () => {
     setLoading(true);
+    setOverviewError('');
     try {
-      const [depts, defaultersData, sessionsData, teachersData, studentsData] = await Promise.all([
-        api.getDepartments().catch(() => []),
-        api.getDefaulters(null, threshold).catch(() => ({ defaulters: [] })),
-        api.getSessions({ status: 'ACTIVE' }).catch(() => []),
-        api.getTeachers().catch(() => []),
-        api.getStudents().catch(() => []),
+      const [depts, defaultersData, sessionsData, teachersData, studentsData, subjects] = await Promise.all([
+        api.getDepartments(),
+        api.getDefaulters(null, threshold),
+        api.getSessions({ status: 'ACTIVE' }),
+        api.getUsers({ role: 'TEACHER', limit: 1 }),
+        api.getUsers({ role: 'STUDENT', limit: 1 }),
+        api.getSubjects(),
       ]);
 
       setDepartments(depts);
       setDefaulters(defaultersData.defaulters || []);
+      setThreshold((current) => current ?? defaultersData.threshold_percentage);
       setActiveSessionsCount(sessionsData.length);
-      setTotalTeachers(teachersData.length);
-      setTotalStudents(studentsData.length);
+      setTotalTeachers(teachersData.total);
+      setTotalStudents(studentsData.total);
+      setTotalSubjects(subjects.length);
     } catch (err) {
-      console.error('Error fetching admin overview data:', err);
+      setOverviewError(err.message || 'Unable to load admin dashboard data.');
     } finally {
       setLoading(false);
     }
@@ -119,26 +138,28 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
   const fetchUsers = async () => {
     try {
       const res = await api.getUsers({
+        skip: (usersPage - 1) * 50,
         role: userRoleFilter || undefined,
-        search: userSearch || undefined,
+        search: debouncedUserSearch || undefined,
         limit: 50,
       });
       setUsersList(res.items || []);
+      setUsersTotal(res.total || 0);
     } catch (err) {
-      console.error(err);
+      setToast({ message: err.message || 'Unable to load users.', type: 'error' });
     }
   };
 
   const fetchAcademicStructure = async () => {
     try {
       const [years, depts, classes, divs, subs, tList, sList] = await Promise.all([
-        api.getAcademicYears().catch(() => []),
-        api.getDepartments().catch(() => []),
-        api.getAcademicClasses().catch(() => []),
-        api.getDivisions().catch(() => []),
-        api.getSubjects().catch(() => []),
-        api.getTeachers().catch(() => []),
-        api.getStudents().catch(() => []),
+        api.getAcademicYears(),
+        api.getDepartments(),
+        api.getAcademicClasses(),
+        api.getDivisions(),
+        api.getSubjects(),
+        api.getTeachers(),
+        api.getStudents(),
       ]);
       setAcademicYears(years);
       setDepartments(depts);
@@ -148,7 +169,7 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
       setTeachersList(tList);
       setStudentsList(sList);
     } catch (err) {
-      console.error(err);
+      setToast({ message: err.message || 'Unable to load academic structure.', type: 'error' });
     }
   };
 
@@ -157,7 +178,7 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
       const data = await api.getTimetables();
       setTimetables(data);
     } catch (err) {
-      console.error(err);
+      setToast({ message: err.message || 'Unable to load timetables.', type: 'error' });
     }
   };
 
@@ -165,26 +186,28 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
     try {
       const res = await api.getDefaulters(null, threshold);
       setDefaulters(res.defaulters || []);
+      setThreshold((current) => current ?? res.threshold_percentage);
     } catch (err) {
-      console.error(err);
+      setToast({ message: err.message || 'Unable to load defaulter reports.', type: 'error' });
     }
   };
 
   const fetchAuditLogs = async () => {
     try {
-      const logs = await api.getAuditLogs().catch(() => []);
+      const logs = await api.getAuditLogs();
       setAuditLogs(logs);
     } catch (err) {
-      console.error(err);
+      setToast({ message: err.message || 'Unable to load audit logs.', type: 'error' });
     }
   };
 
   const handleToggleUserStatus = async (userId, currentStatus) => {
     try {
       await api.updateUserStatus(userId, !currentStatus);
+      setToast({ message: 'User status updated.', type: 'success' });
       fetchUsers();
     } catch (err) {
-      alert(err.message);
+      setToast({ message: err.message || 'Unable to update user status.', type: 'error' });
     }
   };
 
@@ -192,8 +215,18 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
     e.preventDefault();
     setCreateUserError('');
 
-    if (!createUserForm.username || !createUserForm.email || !createUserForm.password || !createUserForm.full_name) {
-      setCreateUserError('Username, email, password, and full name are required');
+    if (!createUserForm.username || !createUserForm.email || !createUserForm.password || (createUserForm.role !== 'ADMIN' && !createUserForm.full_name)) {
+      setCreateUserError('Username, email, and password are required; teacher and student profiles also require a full name.');
+      return;
+    }
+    if (createUserForm.role === 'TEACHER' && (!createUserForm.employee_id || !createUserForm.department_id)) {
+      setCreateUserError('Employee ID and department are required for a teacher.');
+      return;
+    }
+    if (createUserForm.role === 'STUDENT' && ![
+      'roll_number', 'department_id', 'academic_class_id', 'division_id', 'batch_id', 'academic_year_id', 'semester_id',
+    ].every((field) => createUserForm[field])) {
+      setCreateUserError('Complete the student roll, department, class, division, batch, academic year, and semester fields.');
       return;
     }
 
@@ -202,7 +235,6 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
         username: createUserForm.username,
         email: createUserForm.email,
         password: createUserForm.password,
-        full_name: createUserForm.full_name,
         role: createUserForm.role,
       };
 
@@ -210,22 +242,22 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
         payload.teacher_profile = {
           full_name: createUserForm.full_name,
           email: createUserForm.email,
-          employee_id: `EMP-${Date.now().toString().slice(-4)}`,
-          department_id: createUserForm.department_id ? parseInt(createUserForm.department_id) : 1,
+          employee_id: createUserForm.employee_id,
+          department_id: Number(createUserForm.department_id),
         };
       } else if (createUserForm.role === 'STUDENT') {
         payload.student_profile = {
           full_name: createUserForm.full_name,
-          student_id: `STU-${Date.now().toString().slice(-4)}`,
-          roll_number: createUserForm.roll_number || `RN-${Date.now().toString().slice(-4)}`,
-          enrollment_number: `EN-${Date.now().toString().slice(-6)}`,
+          ...(createUserForm.student_id ? { student_id: createUserForm.student_id } : {}),
+          roll_number: createUserForm.roll_number,
+          ...(createUserForm.enrollment_number ? { enrollment_number: createUserForm.enrollment_number } : {}),
           email: createUserForm.email,
-          department_id: createUserForm.department_id ? parseInt(createUserForm.department_id) : 1,
-          academic_class_id: 1,
-          division_id: createUserForm.division_id ? parseInt(createUserForm.division_id) : 1,
-          batch_id: 1,
-          academic_year_id: 1,
-          semester_id: 1,
+          department_id: Number(createUserForm.department_id),
+          academic_class_id: Number(createUserForm.academic_class_id),
+          division_id: Number(createUserForm.division_id),
+          batch_id: Number(createUserForm.batch_id),
+          academic_year_id: Number(createUserForm.academic_year_id),
+          semester_id: Number(createUserForm.semester_id),
         };
       }
 
@@ -247,12 +279,14 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
         <>
           <div>
             <h1 style={{ fontSize: '1.85rem', fontWeight: 800 }}>
-              Good morning, Dr. Kavita 👋
+              Good morning, {(user?.teacher_profile?.full_name || user?.full_name || user?.username || 'Administrator').split(' ')[0]} 👋
             </h1>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem', marginTop: '0.2rem' }}>
-              Here's today's campus attendance overview at JSPM's Bhivrabai Sawant Polytechnic, Pune.
+              Here's today's campus attendance overview for Shri Vaishnav Vidyapeeth Vishwavidyalaya.
             </p>
           </div>
+          {loading && <div className="workspace-state" role="status">Loading dashboard data…</div>}
+          {overviewError && <div className="workspace-error" role="alert">{overviewError}</div>}
 
           {/* Metric Cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem' }}>
@@ -263,6 +297,16 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
               <div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Departments</div>
                 <div style={{ fontSize: '1.6rem', fontWeight: 800, marginTop: '0.15rem' }}>{departments.length}</div>
+              </div>
+            </div>
+
+            <div className="glass-card" style={{ padding: '1.35rem', display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+              <div style={{ padding: '0.9rem', background: 'rgba(59, 130, 246, 0.15)', borderRadius: '16px', color: '#60a5fa' }}>
+                <BookOpen size={26} />
+              </div>
+              <div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Total Subjects</div>
+                <div style={{ fontSize: '1.6rem', fontWeight: 800, marginTop: '0.15rem' }}>{totalSubjects}</div>
               </div>
             </div>
 
@@ -306,6 +350,7 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
               </div>
             </div>
           </div>
+          <p className="workspace-meta">Overall attendance aggregation is not exposed by the current admin report API; defaulter counts above come from live report data.</p>
 
           {/* Quick Action Banner */}
           <div className="glass-card" style={{ padding: '1.5rem', background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(67, 56, 202, 0.05))', border: '1px solid rgba(99, 102, 241, 0.3)' }}>
@@ -360,7 +405,10 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                 View, filter, create, and manage access roles for all administrators, teachers, and students.
               </p>
             </div>
-            <button className="btn-primary" onClick={() => setShowCreateUserModal(true)}>
+            <button className="btn-primary" onClick={() => {
+              setShowCreateUserModal(true);
+              fetchAcademicStructure();
+            }}>
               <Plus size={18} /> Add New System User
             </button>
           </div>
@@ -374,7 +422,10 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                 className="glass-input"
                 placeholder="Search by name, username, or email..."
                 value={userSearch}
-                onChange={(e) => setUserSearch(e.target.value)}
+                onChange={(e) => {
+                  setUserPage(1);
+                  setUserSearch(e.target.value);
+                }}
               />
             </div>
 
@@ -389,7 +440,10 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                     background: userRoleFilter === r ? 'var(--accent-primary)' : 'rgba(255,255,255,0.05)',
                     color: userRoleFilter === r ? '#ffffff' : 'var(--text-secondary)',
                   }}
-                  onClick={() => setUserRoleFilter(r)}
+                  onClick={() => {
+                    setUserPage(1);
+                    setUserRoleFilter(r);
+                  }}
                 >
                   {r === '' ? 'All Roles' : r}
                 </button>
@@ -422,7 +476,7 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                     <tr key={u.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                       <td style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>#{u.id}</td>
                       <td style={{ padding: '0.85rem 1rem' }}>
-                        <div style={{ fontWeight: 700 }}>{u.full_name || u.username}</div>
+                        <div style={{ fontWeight: 700 }}>{u.student_profile?.full_name || u.teacher_profile?.full_name || u.full_name || u.username}</div>
                         <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>@{u.username}</div>
                       </td>
                       <td style={{ padding: '0.85rem 1rem', color: 'var(--text-secondary)' }}>{u.email}</td>
@@ -448,6 +502,13 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                 )}
               </tbody>
             </table>
+            <div className="table-pagination">
+              <span>Showing {usersTotal === 0 ? 0 : (usersPage - 1) * 50 + 1}–{Math.min(usersPage * 50, usersTotal)} of {usersTotal}</span>
+              <div>
+                <button className="btn-secondary" disabled={usersPage <= 1} onClick={() => setUsersPage((page) => page - 1)}>Previous</button>
+                <button className="btn-secondary" disabled={usersPage * 50 >= usersTotal} onClick={() => setUsersPage((page) => page + 1)}>Next</button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -472,9 +533,11 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                     placeholder="e.g. john_doe"
                     value={createUserForm.username}
                     onChange={(e) => setCreateUserForm({ ...createUserForm, username: e.target.value })}
+                    minLength="3"
+                    required
                   />
                 </div>
-                <div>
+                {createUserForm.role !== 'ADMIN' && <div>
                   <label style={{ display: 'block', fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>Full Name</label>
                   <input
                     type="text"
@@ -482,8 +545,9 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                     placeholder="e.g. John Doe"
                     value={createUserForm.full_name}
                     onChange={(e) => setCreateUserForm({ ...createUserForm, full_name: e.target.value })}
+                    required
                   />
-                </div>
+                </div>}
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
@@ -495,6 +559,7 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                     placeholder="user@institution.edu"
                     value={createUserForm.email}
                     onChange={(e) => setCreateUserForm({ ...createUserForm, email: e.target.value })}
+                    required
                   />
                 </div>
                 <div>
@@ -505,6 +570,8 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                     placeholder="••••••••"
                     value={createUserForm.password}
                     onChange={(e) => setCreateUserForm({ ...createUserForm, password: e.target.value })}
+                    minLength="6"
+                    required
                   />
                 </div>
               </div>
@@ -523,15 +590,96 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
               </div>
 
               {createUserForm.role === 'STUDENT' && (
-                <div>
+                <div className="profile-fields">
                   <label style={{ display: 'block', fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>Roll Number</label>
                   <input
                     type="text"
                     className="glass-input"
-                    placeholder="e.g. CS-2026-001"
+                    placeholder="Institution-assigned roll number"
                     value={createUserForm.roll_number}
                     onChange={(e) => setCreateUserForm({ ...createUserForm, roll_number: e.target.value })}
+                    required
                   />
+                  <label>Student ID (optional)
+                    <input className="glass-input" value={createUserForm.student_id} onChange={(e) => setCreateUserForm({ ...createUserForm, student_id: e.target.value })} />
+                  </label>
+                  <label>Enrollment number (optional)
+                    <input className="glass-input" value={createUserForm.enrollment_number} onChange={(e) => setCreateUserForm({ ...createUserForm, enrollment_number: e.target.value })} />
+                  </label>
+                </div>
+              )}
+              {(createUserForm.role === 'TEACHER' || createUserForm.role === 'STUDENT') && (
+                <label>Department
+                  <select className="glass-input" required value={createUserForm.department_id} onChange={(e) => setCreateUserForm({ ...createUserForm, department_id: e.target.value })}>
+                    <option value="">Select department</option>
+                    {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+                  </select>
+                </label>
+              )}
+              {createUserForm.role === 'TEACHER' && (
+                <label>Employee ID
+                  <input className="glass-input" required value={createUserForm.employee_id} onChange={(e) => setCreateUserForm({ ...createUserForm, employee_id: e.target.value })} />
+                </label>
+              )}
+              {createUserForm.role === 'STUDENT' && (
+                <div className="profile-fields">
+                  <label>Academic class
+                    <select className="glass-input" required value={createUserForm.academic_class_id} onChange={(e) => {
+                      const academicClassId = e.target.value;
+                      setCreateUserForm({ ...createUserForm, academic_class_id: academicClassId, division_id: '', batch_id: '' });
+                      api.getDivisions(academicClassId).then(setDivisionsList).catch((err) => setCreateUserError(err.message));
+                    }}>
+                      <option value="">Select class</option>
+                      {classesList.filter((item) => !createUserForm.department_id || item.department_id === Number(createUserForm.department_id)).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                  <label>Division
+                    <select className="glass-input" required value={createUserForm.division_id} onChange={(e) => {
+                      const divisionId = e.target.value;
+                      setCreateUserForm({ ...createUserForm, division_id: divisionId, batch_id: '' });
+                      api.getBatches(divisionId).then(setBatchesList).catch((err) => setCreateUserError(err.message));
+                    }}>
+                      <option value="">Select division</option>
+                      {divisionsList.filter((item) => (
+                        (!createUserForm.academic_class_id || item.academic_class_id === Number(createUserForm.academic_class_id))
+                        && (!createUserForm.academic_year_id || item.academic_year_id === Number(createUserForm.academic_year_id))
+                        && (!createUserForm.semester_id || item.semester_id === Number(createUserForm.semester_id))
+                      )).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                  <label>Batch
+                    <select className="glass-input" required value={createUserForm.batch_id} onChange={(e) => setCreateUserForm({ ...createUserForm, batch_id: e.target.value })}>
+                      <option value="">Select batch</option>
+                      {batchesList.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                  <label>Academic year
+                    <select className="glass-input" required value={createUserForm.academic_year_id} onChange={(e) => {
+                      const academicYearId = e.target.value;
+                      setCreateUserForm({
+                        ...createUserForm,
+                        academic_year_id: academicYearId,
+                        semester_id: '',
+                        division_id: '',
+                        batch_id: '',
+                      });
+                      api.getSemesters(academicYearId).then(setSemesters).catch((err) => setCreateUserError(err.message));
+                    }}>
+                      <option value="">Select year</option>
+                      {academicYears.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                  <label>Semester
+                    <select className="glass-input" required value={createUserForm.semester_id} onChange={(e) => setCreateUserForm({
+                      ...createUserForm,
+                      semester_id: e.target.value,
+                      division_id: '',
+                      batch_id: '',
+                    })}>
+                      <option value="">Select semester</option>
+                      {semesters.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
                 </div>
               )}
 
@@ -553,6 +701,8 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
               Departments, academic years, classes, divisions, batches, subjects, teachers, and students.
             </p>
           </div>
+
+          <AcademicSetup onDataChanged={fetchAcademicStructure} />
 
           {/* Sub-tabs */}
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', borderBottom: '1px solid var(--border-glass)', paddingBottom: '0.5rem' }}>
@@ -803,7 +953,7 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
               <div>
                 <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#ffffff' }}>Smart Attendance Insights</h3>
                 <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', marginTop: '0.3rem', margin: 0 }}>
-                  Students below 75% attendance require immediate academic attention and parent notification per JSPM regulations.
+                  Students below the configured attendance threshold require academic attention.
                 </p>
               </div>
             </div>
@@ -822,7 +972,7 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                   type="number"
                   className="glass-input"
                   style={{ width: '80px', padding: '0.4rem 0.6rem' }}
-                  value={threshold}
+                  value={threshold ?? ''}
                   onChange={(e) => setThreshold(e.target.value)}
                 />
                 <button className="btn-primary" style={{ padding: '0.4rem 0.85rem' }} onClick={fetchDefaulters}>
@@ -843,7 +993,7 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
-                    a.download = `JSPM_Defaulter_Report_${new Date().toISOString().slice(0,10)}.csv`;
+                    a.download = `Attendance_Defaulter_Report_${new Date().toISOString().slice(0,10)}.csv`;
                     a.click();
                     setToast({ message: 'Defaulter Report exported to CSV/Excel format!', type: 'success' });
                   }}
@@ -880,11 +1030,11 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
                         <td style={{ padding: '0.85rem 1rem', color: 'var(--text-secondary)' }}>{st.email}</td>
                         <td style={{ padding: '0.85rem 1rem' }}>{st.division_name || '-'}</td>
                         <td style={{ padding: '0.85rem 1rem' }}>{st.attended_sessions} / {st.total_sessions}</td>
-                        <td style={{ padding: '0.85rem 1rem', fontWeight: 800, color: st.attendance_percentage < 60 ? '#f87171' : '#fbbf24' }}>
+                        <td style={{ padding: '0.85rem 1rem', fontWeight: 800, color: st.attendance_percentage < threshold * 0.8 ? '#f87171' : '#fbbf24' }}>
                           {st.attendance_percentage}%
                         </td>
                         <td style={{ padding: '0.85rem 1rem' }}>
-                          <RiskBadge percentage={st.attendance_percentage} />
+                          <RiskBadge percentage={st.attendance_percentage} requiredPercentage={threshold} />
                         </td>
                         <td style={{ padding: '0.85rem 1rem' }}>
                           <button
@@ -965,20 +1115,20 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
         </div>
       )}
 
-      {/* Official JSPM Defaulter Letter Generator Modal */}
+      {/* Defaulter notice generator modal */}
       {selectedNoticeStudent && (
         <div className="modal-overlay" onClick={() => setSelectedNoticeStudent(null)}>
           <div className="glass-card" onClick={(e) => e.stopPropagation()} style={{ width: '600px', padding: '2rem', background: '#ffffff', color: '#0f172a', borderRadius: '16px', border: '1px solid #cbd5e1', boxShadow: '0 25px 50px rgba(0,0,0,0.4)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid #1e3a8a', paddingBottom: '1rem', marginBottom: '1.25rem' }}>
               <div>
                 <div style={{ fontSize: '1.2rem', fontWeight: 900, color: '#1e3a8a', letterSpacing: '-0.02em' }}>
-                  JSPM's BHIVRABAI SAWANT POLYTECHNIC
+                  SHRI VAISHNAV VIDYAPEETH VISHWAVIDYALAYA
                 </div>
                 <div style={{ fontSize: '0.78rem', color: '#475569', fontWeight: 600 }}>
-                  Survey No. 720, Wagholi, Pune - 412207 | Department of Computer Engineering
+                  Attendance & Academic Portal
                 </div>
                 <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '0.2rem' }}>
-                  Approved by AICTE New Delhi & Affiliated to MSBTE Mumbai
+                  Attendance notice
                 </div>
               </div>
               <button onClick={() => setSelectedNoticeStudent(null)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer' }}>
@@ -987,7 +1137,7 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#475569', marginBottom: '1.25rem' }}>
-              <div><strong>Ref No:</strong> JSPM/BSP/CE/2026/{selectedNoticeStudent.roll_number}</div>
+              <div><strong>Ref No:</strong> ATT/{new Date().getFullYear()}/{selectedNoticeStudent.roll_number}</div>
               <div><strong>Date:</strong> {new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
             </div>
 
@@ -1003,11 +1153,11 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
               Roll Number: <strong>{selectedNoticeStudent.roll_number}</strong> | Division: <strong>{selectedNoticeStudent.division_name || 'Div A'}</strong></p>
 
               <p style={{ marginTop: '0.75rem' }}>
-                This is to formally notify you that your ward <strong>{selectedNoticeStudent.full_name}</strong> currently has an overall attendance of <strong style={{ color: '#dc2626' }}>{selectedNoticeStudent.attendance_percentage}%</strong> ({selectedNoticeStudent.attended_sessions} out of {selectedNoticeStudent.total_sessions} classes attended), which is below the mandatory MSBTE requirement of <strong>75%</strong>.
+                This is to formally notify you that your ward <strong>{selectedNoticeStudent.full_name}</strong> currently has an overall attendance of <strong style={{ color: '#dc2626' }}>{selectedNoticeStudent.attendance_percentage}%</strong> ({selectedNoticeStudent.attended_sessions} out of {selectedNoticeStudent.total_sessions} classes attended), which is below the configured attendance threshold of <strong>{threshold ?? 75}%</strong>.
               </p>
 
               <p style={{ marginTop: '0.75rem' }}>
-                As per college academic regulations, failure to improve attendance to 75% before the final submission deadline will result in detention from term-end practical and theory examinations.
+                Please contact the academic office for guidance on the applicable attendance policy.
               </p>
             </div>
 
@@ -1020,12 +1170,12 @@ export default function AdminDashboard({ activeTab = 'overview', onNavigate }) {
               <div>
                 <div style={{ borderBottom: '1px solid #94a3b8', width: '140px', margin: '0 auto 0.4rem auto' }}></div>
                 <strong>Head of Department (HOD)</strong><br />
-                Dr. Kavita Deshmukh
+                Academic Office
               </div>
               <div>
                 <div style={{ borderBottom: '1px solid #94a3b8', width: '140px', margin: '0 auto 0.4rem auto' }}></div>
                 <strong>Principal</strong><br />
-                JSPM B. S. Polytechnic
+                Shri Vaishnav Vidyapeeth Vishwavidyalaya
               </div>
             </div>
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { LogIn, Shield, UserCheck, GraduationCap, AlertCircle } from 'lucide-react';
+import { LogIn, UserCheck, AlertCircle } from 'lucide-react';
 import { api, setAuthToken, setStoredUser } from '../api';
 
 export default function LoginView({ onLoginSuccess }) {
@@ -28,12 +28,6 @@ export default function LoginView({ onLoginSuccess }) {
     } finally {
       setLoading(false);
     }
-  };
-
-  const fillDemoCreds = (u, p) => {
-    setUsername(u);
-    setPassword(p);
-    setError('');
   };
 
   return (
@@ -66,7 +60,7 @@ export default function LoginView({ onLoginSuccess }) {
             <UserCheck size={32} color="#ffffff" />
           </div>
           <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--accent-primary)', fontWeight: 700, marginBottom: '0.2rem' }}>
-            JSPM's Bhivrabai Sawant Polytechnic, Pune
+            Shri Vaishnav Vidyapeeth Vishwavidyalaya
           </div>
           <h1 style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
             Attendance MS
@@ -96,26 +90,32 @@ export default function LoginView({ onLoginSuccess }) {
 
         <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
           <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+            <label htmlFor="login-username" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
               Username / Identification
             </label>
             <input
               type="text"
+              id="login-username"
               className="glass-input"
-              placeholder="e.g. admin, teacher1, student1"
+              placeholder="Enter your username or email"
+              autoComplete="username"
+              required
               value={username}
               onChange={(e) => setUsername(e.target.value)}
             />
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+            <label htmlFor="login-password" style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
               Password
             </label>
             <input
               type="password"
+              id="login-password"
               className="glass-input"
               placeholder="••••••••"
+              autoComplete="current-password"
+              required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
@@ -131,45 +131,10 @@ export default function LoginView({ onLoginSuccess }) {
           </button>
         </form>
 
-        {/* Demo Login Shortcuts */}
-        <div style={{ marginTop: '2rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border-glass)' }}>
-          <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'center', marginBottom: '0.85rem' }}>
-            Quick Development Login
-          </p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem' }}>
-            <button
-              onClick={() => fillDemoCreds('admin', 'AdminPass@123')}
-              className="btn-secondary"
-              style={{ padding: '0.5rem', fontSize: '0.78rem', flexDirection: 'column', gap: '0.25rem' }}
-            >
-              <Shield size={16} color="#818cf8" />
-              Admin
-            </button>
-
-            <button
-              onClick={() => fillDemoCreds('teacher1', 'JSPM#Faculty2026!')}
-              className="btn-secondary"
-              style={{ padding: '0.5rem', fontSize: '0.78rem', flexDirection: 'column', gap: '0.25rem' }}
-            >
-              <UserCheck size={16} color="#34d399" />
-              Teacher
-            </button>
-
-            <button
-              onClick={() => fillDemoCreds('student1', 'StudentPass123!')}
-              className="btn-secondary"
-              style={{ padding: '0.5rem', fontSize: '0.78rem', flexDirection: 'column', gap: '0.25rem' }}
-            >
-              <GraduationCap size={16} color="#f43f5e" />
-              Student
-            </button>
-          </div>
-        </div>
-
         {/* Small College Footer */}
         <div style={{ marginTop: '1.75rem', textAlign: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-          © 2026 JSPM's Bhivrabai Sawant Polytechnic<br />
-          Computer Engineering Department
+          © 2026 Shri Vaishnav Vidyapeeth Vishwavidyalaya<br />
+          Attendance & Academic Portal
         </div>
       </div>
     </div>

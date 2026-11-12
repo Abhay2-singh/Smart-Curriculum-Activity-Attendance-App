@@ -72,6 +72,7 @@ class StudentAttendanceReport(BaseModel):
     total_sessions: int
     attended_sessions: int
     overall_percentage: float
+    required_attendance_percentage: float
     subject_breakdown: List[SubjectAttendanceSummary]
 
 

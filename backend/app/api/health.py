@@ -1,10 +1,14 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 
 router = APIRouter(prefix="/health", tags=["Health Checks"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("", summary="Basic Health Check")
@@ -33,20 +37,13 @@ def database_health_check(db: Session = Depends(get_db)):
             "host": settings.DB_HOST,
             "port": settings.DB_PORT
         }
-    except Exception as e:
-        # Sanitize exception message so password is never leaked
-        raw_err = str(e)
-        # Strip password if it happens to be in raw exception string
-        if settings.DB_PASSWORD and settings.DB_PASSWORD in raw_err:
-            raw_err = raw_err.replace(settings.DB_PASSWORD, "****")
-            
+    except SQLAlchemyError as exc:
+        logger.warning("Database health check failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
                 "status": "error",
                 "database": "disconnected",
-                "database_name": settings.DB_NAME,
                 "message": "Failed to connect to MySQL database",
-                "error_details": raw_err
             }
-        )
+        ) from exc

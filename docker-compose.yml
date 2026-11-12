@@ -1,42 +1,78 @@
-version: '3.8'
-
 services:
   db:
     image: mysql:8.0
-    container_name: attendance_db
-    restart: always
+    restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: Root@123
-      MYSQL_DATABASE: attendance_management
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the root .env file}
+      MYSQL_DATABASE: ${DB_NAME:-attendance_management}
     ports:
-      - "3306:3306"
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping --host=127.0.0.1 --user=root --password=\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
 
   backend:
     build: ./backend
-    container_name: attendance_backend
-    restart: always
+    restart: unless-stopped
     environment:
+      APP_ENV: ${APP_ENV:-development}
+      APP_PORT: 8000
       DB_HOST: db
       DB_PORT: 3306
       DB_USER: root
-      DB_PASSWORD: Root@123
-      DB_NAME: attendance_management
-      JWT_SECRET_KEY: dev_jwt_secret_key_change_in_production_892374928374982374
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the root .env file}
+      DB_NAME: ${DB_NAME:-attendance_management}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in the root .env file}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost,http://localhost:5173}
+      INIT_ADMIN_USERNAME: ${INIT_ADMIN_USERNAME:-admin}
+      INIT_ADMIN_EMAIL: ${INIT_ADMIN_EMAIL:-admin@attendance.com}
+      INIT_ADMIN_PASSWORD: ${INIT_ADMIN_PASSWORD:-}
+      REQUIRED_ATTENDANCE_PERCENTAGE: ${REQUIRED_ATTENDANCE_PERCENTAGE:-75}
+      ATTENDANCE_QR_TOKEN_TTL_SECONDS: ${ATTENDANCE_QR_TOKEN_TTL_SECONDS:-45}
+      ATTENDANCE_QR_REFRESH_INTERVAL_SECONDS: ${ATTENDANCE_QR_REFRESH_INTERVAL_SECONDS:-30}
+      EMBEDDING_API_URL: ${EMBEDDING_API_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      QDRANT_URL: ${QDRANT_URL:-}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-academic_documents}
+      LLM_API_URL: ${LLM_API_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   frontend:
     build: ./frontend
-    container_name: attendance_frontend
-    restart: always
+    restart: unless-stopped
     ports:
-      - "80:80"
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   mysql_data:

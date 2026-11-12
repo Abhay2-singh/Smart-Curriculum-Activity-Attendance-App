@@ -112,7 +112,7 @@ export default function SplashScreen({ onComplete }) {
             fontWeight: 700,
             marginBottom: '0.4rem'
           }}>
-            Pune, Maharashtra
+            Attendance & Academic Portal
           </div>
           <h1 style={{
             fontSize: '1.8rem',
@@ -124,7 +124,7 @@ export default function SplashScreen({ onComplete }) {
             margin: '0 0 0.5rem 0',
             lineHeight: 1.25
           }}>
-            JSPM's Bhivrabai Sawant Polytechnic
+            Shri Vaishnav Vidyapeeth Vishwavidyalaya
           </h1>
         </div>
 
