@@ -9,6 +9,7 @@ from app.core.security import decode_access_token
 from app.models.user import User
 from app.models.enums import UserRole
 from app.services.auth_service import get_user_by_id
+from app.services.profile_provisioning_service import ensure_user_profile
 
 # HTTP Bearer scheme for Swagger UI & token extraction
 security = HTTPBearer(auto_error=False)
@@ -73,6 +74,7 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    user = ensure_user_profile(db, user)
     return user
 
 

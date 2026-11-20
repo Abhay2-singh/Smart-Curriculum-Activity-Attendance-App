@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.health import router as health_router
@@ -12,13 +13,29 @@ from app.api.learning import router as learning_router
 from app.api.rag import router as rag_router
 
 from app.core.config import settings
+from app.core.database import SessionLocal, get_db
+from app.services.profile_provisioning_service import init_default_academic_structure, heal_all_existing_users
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: ensure academic structure & heal all existing users in live mode
+    try:
+        with SessionLocal() as db:
+            init_default_academic_structure(db)
+            heal_all_existing_users(db)
+    except Exception as e:
+        print(f"[STARTUP INITIALIZATION WARNING]: {e}")
+    yield
+
 
 app = FastAPI(
     title="Attendance Management System API",
     description="Backend API foundation for Attendance Management System",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # Configure CORS using environment settings

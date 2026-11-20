@@ -38,7 +38,7 @@ class TeacherResponse(BaseModel):
 class StudentCreate(BaseModel):
     student_id: Optional[str] = Field(None, description="Unique Student ID", example="STU2026001")
     roll_number: str = Field(..., description="Roll Number in Class", example="CS001")
-    enrollment_number: Optional[str] = Field(None, description="University Enrollment Number", example="EN20269988")
+    enrollment_number: str = Field(..., min_length=1, max_length=50, description="University Enrollment Number", example="EN20269988")
     full_name: str = Field(..., description="Student Full Name", example="Ada Lovelace")
     email: EmailStr = Field(..., description="Student Email Address", example="ada@attendance.com")
     department_id: Optional[int] = Field(1, description="Department ID", example=1)
@@ -47,6 +47,25 @@ class StudentCreate(BaseModel):
     batch_id: Optional[int] = Field(1, description="Batch ID", example=1)
     academic_year_id: Optional[int] = Field(1, description="Academic Year ID", example=1)
     semester_id: Optional[int] = Field(1, description="Semester ID", example=1)
+
+
+class TeacherProfileLinkRequest(BaseModel):
+    full_name: str = Field(..., min_length=1, max_length=100)
+    employee_id: str = Field(..., min_length=1, max_length=50)
+    department_id: int = Field(..., ge=1)
+
+
+class StudentProfileLinkRequest(BaseModel):
+    full_name: str = Field(..., min_length=1, max_length=100)
+    student_id: Optional[str] = Field(None, max_length=50)
+    enrollment_number: str = Field(..., min_length=1, max_length=50)
+    roll_number: str = Field(..., min_length=1, max_length=50)
+    department_id: int = Field(..., ge=1)
+    academic_class_id: int = Field(..., ge=1)
+    division_id: int = Field(..., ge=1)
+    batch_id: int = Field(..., ge=1)
+    academic_year_id: int = Field(..., ge=1)
+    semester_id: int = Field(..., ge=1)
 
 
 class StudentUpdate(BaseModel):
@@ -109,6 +128,8 @@ class UserDetailResponse(BaseModel):
     id: int
     username: str
     email: str
+    full_name: Optional[str] = None
+    enrollment_number: Optional[str] = None
     role: UserRole
     is_active: bool
     created_at: datetime

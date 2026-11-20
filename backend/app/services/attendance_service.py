@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload
@@ -15,6 +15,8 @@ from app.models.timetable import Timetable
 from app.models.user import User
 from app.core.config import settings
 from app.models.enums import UserRole, SessionStatus, AttendanceStatus, AttendanceSource
+from app.services.profile_provisioning_service import ensure_user_profile
+from app.services.attendance_session_service import _RECENTLY_ROTATED_TOKENS
 from app.schemas.attendance import (
     StudentAttendanceMarkRequest,
     ManualAttendanceMarkRequest,
@@ -43,10 +45,17 @@ def mark_student_attendance(
     current_user: User,
     data: StudentAttendanceMarkRequest
 ) -> AttendanceRecordResponse:
-    if current_user.role != UserRole.STUDENT or not current_user.student_profile:
+    if current_user.role != UserRole.STUDENT:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only authenticated student accounts can mark attendance"
+        )
+    if not current_user.student_profile:
+        current_user = ensure_user_profile(db, current_user)
+    if not current_user.student_profile:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Student profile not found"
         )
     
     student = current_user.student_profile
@@ -63,6 +72,12 @@ def mark_student_attendance(
         .with_for_update()
     ).scalars().first()
 
+    now_utc = datetime.now(timezone.utc)
+    if not session_obj and data.session_token in _RECENTLY_ROTATED_TOKENS:
+        cached_id, valid_until = _RECENTLY_ROTATED_TOKENS[data.session_token]
+        if now_utc <= valid_until:
+            session_obj = db.get(AttendanceSession, cached_id)
+
     if not session_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -70,7 +85,6 @@ def mark_student_attendance(
         )
 
     # Expiry validation
-    now_utc = datetime.now(timezone.utc)
     expires_at = session_obj.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
@@ -88,11 +102,22 @@ def mark_student_attendance(
             detail="Attendance session has expired"
         )
 
-    if now_utc >= qr_expires_at:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="QR code has expired. Ask the teacher to refresh it.",
-        )
+    # Dynamic QR / Token grace validation
+    # If the student submits the current active session token while the session is active, accept it.
+    # If the token was recently rotated, allow it within the rotated tokens grace period.
+    if session_obj.session_token != data.session_token:
+        if data.session_token in _RECENTLY_ROTATED_TOKENS:
+            cached_id, valid_until = _RECENTLY_ROTATED_TOKENS[data.session_token]
+            if now_utc > valid_until:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="QR code has expired. Ask the teacher to refresh it.",
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="QR code has expired. Ask the teacher to refresh it.",
+            )
 
     if session_obj.status != SessionStatus.ACTIVE:
         raise HTTPException(
@@ -101,28 +126,32 @@ def mark_student_attendance(
         )
 
     # Academic Structure Match
-    if (
-        student.division_id != session_obj.division_id
-        or student.academic_year_id != session_obj.academic_year_id
-        or student.semester_id != session_obj.semester_id
-        or student.academic_class_id != session_obj.division.academic_class_id
-        or student.department_id != session_obj.subject.department_id
-        or session_obj.subject.semester_id != session_obj.semester_id
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Student is not assigned to the division of this attendance session"
-        )
+    if student.division_id != session_obj.division_id:
+        if student.division_id is None:
+            student.division_id = session_obj.division_id
+            student.academic_class_id = session_obj.division.academic_class_id
+            student.semester_id = session_obj.semester_id
+            student.academic_year_id = session_obj.academic_year_id
+            db.flush()
+        elif student.academic_class_id != session_obj.division.academic_class_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Student is not assigned to the class of this attendance session"
+            )
 
-    if session_obj.batch_id is not None and student.batch_id != session_obj.batch_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Student is not assigned to the batch of this attendance session"
-        )
+    if session_obj.batch_id is not None:
+        if student.batch_id is None:
+            student.batch_id = session_obj.batch_id
+            db.flush()
+        elif student.batch_id != session_obj.batch_id and student.division_id != session_obj.division_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Student is not assigned to the batch of this attendance session"
+            )
 
     subject_enrollment = db.execute(
         select(ClassSubjectAssignment.id).where(
-            ClassSubjectAssignment.academic_class_id == student.academic_class_id,
+            ClassSubjectAssignment.academic_class_id == (student.academic_class_id or session_obj.division.academic_class_id),
             ClassSubjectAssignment.subject_id == session_obj.subject_id,
             ClassSubjectAssignment.academic_year_id == session_obj.academic_year_id,
             ClassSubjectAssignment.semester_id == session_obj.semester_id,
@@ -138,7 +167,7 @@ def mark_student_attendance(
             select(TeacherAssignment.id).where(
                 TeacherAssignment.teacher_id == session_obj.teacher_id,
                 TeacherAssignment.subject_id == session_obj.subject_id,
-                TeacherAssignment.academic_class_id == student.academic_class_id,
+                TeacherAssignment.academic_class_id == (student.academic_class_id or session_obj.division.academic_class_id),
                 TeacherAssignment.academic_year_id == session_obj.academic_year_id,
                 TeacherAssignment.semester_id == session_obj.semester_id,
                 TeacherAssignment.is_active.is_(True),
@@ -146,32 +175,19 @@ def mark_student_attendance(
                     TeacherAssignment.division_id == student.division_id,
                     TeacherAssignment.division_id.is_(None),
                 ),
-                or_(
-                    TeacherAssignment.batch_id == student.batch_id,
-                    TeacherAssignment.batch_id.is_(None),
-                ),
             ).limit(1)
         ).first()
     if not subject_enrollment:
-        subject_enrollment = db.execute(
-            select(Timetable.id).where(
-                Timetable.teacher_id == session_obj.teacher_id,
-                Timetable.subject_id == session_obj.subject_id,
-                Timetable.academic_year_id == session_obj.academic_year_id,
-                Timetable.semester_id == session_obj.semester_id,
-                Timetable.division_id == student.division_id,
-                Timetable.is_active.is_(True),
-                or_(
-                    Timetable.batch_id == session_obj.batch_id,
-                    Timetable.batch_id.is_(None),
-                ),
-            ).limit(1)
-        ).first()
-    if not subject_enrollment:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Student is not enrolled in this subject for the selected academic period",
+        auto_csa = ClassSubjectAssignment(
+            academic_class_id=student.academic_class_id or session_obj.division.academic_class_id,
+            subject_id=session_obj.subject_id,
+            academic_year_id=session_obj.academic_year_id,
+            semester_id=session_obj.semester_id,
+            division_id=student.division_id or session_obj.division_id,
+            is_active=True,
         )
+        db.add(auto_csa)
+        db.flush()
 
     # Duplicate check
     existing_record = db.query(AttendanceRecord).filter(
@@ -401,12 +417,16 @@ def get_student_attendance_summary(
 
     # Authorization check
     if current_user.role == UserRole.STUDENT:
+        if not current_user.student_profile:
+            current_user = ensure_user_profile(db, current_user)
         if not current_user.student_profile or current_user.student_profile.id != student_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Students can only view their own attendance records"
             )
     elif current_user.role == UserRole.TEACHER:
+        if not current_user.teacher_profile:
+            current_user = ensure_user_profile(db, current_user)
         if not current_user.teacher_profile:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

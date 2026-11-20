@@ -55,11 +55,14 @@ export async function apiRequest(endpoint, options = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    let errorMsg = 'An API error occurred';
+    let errorMsg = `Request failed (HTTP ${response.status})`;
     if (typeof data.detail === 'string') {
       errorMsg = data.detail;
     } else if (Array.isArray(data.detail)) {
-      errorMsg = data.detail.map(e => e.msg || e.detail || JSON.stringify(e)).join(', ');
+      const details = data.detail
+        .map((item) => item.msg || item.detail || JSON.stringify(item))
+        .filter(Boolean);
+      if (details.length) errorMsg = details.join(', ');
     } else if (typeof data.detail === 'object' && data.detail !== null) {
       errorMsg = data.detail.message || data.detail.msg || JSON.stringify(data.detail);
     } else if (data.message) {
@@ -72,10 +75,21 @@ export async function apiRequest(endpoint, options = {}) {
 }
 
 export const api = {
-  login: (username, password) =>
+  login: (username, password, role) =>
     apiRequest('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, role }),
+    }),
+
+  registerStudent: (registration) =>
+    apiRequest('/auth/register/student', {
+      method: 'POST',
+      body: JSON.stringify(registration),
+    }),
+  registerTeacher: (registration) =>
+    apiRequest('/auth/register/teacher', {
+      method: 'POST',
+      body: JSON.stringify(registration),
     }),
 
   getMe: () => apiRequest('/auth/me'),
@@ -94,6 +108,16 @@ export const api = {
     apiRequest('/users', {
       method: 'POST',
       body: JSON.stringify(userData),
+    }),
+  linkStudentProfile: (userId, profile) =>
+    apiRequest(`/users/${userId}/student-profile`, {
+      method: 'POST',
+      body: JSON.stringify(profile),
+    }),
+  linkTeacherProfile: (userId, profile) =>
+    apiRequest(`/users/${userId}/teacher-profile`, {
+      method: 'POST',
+      body: JSON.stringify(profile),
     }),
   getUser: (id) => apiRequest(`/users/${id}`),
   updateUser: (id, userData) =>
@@ -133,7 +157,7 @@ export const api = {
     return items.map((user) => ({
       id: user.teacher_profile?.id,
       employee_id: user.teacher_profile?.employee_id,
-      full_name: user.teacher_profile?.full_name || user.username,
+      full_name: user.teacher_profile?.full_name || user.full_name || user.username,
       email: user.teacher_profile?.email || user.email,
       department_id: user.teacher_profile?.department_id,
     }));
@@ -148,7 +172,7 @@ export const api = {
       id: user.student_profile?.id,
       student_id: user.student_profile?.student_id,
       roll_number: user.student_profile?.roll_number,
-      full_name: user.student_profile?.full_name || user.username,
+      full_name: user.student_profile?.full_name || user.full_name || user.username,
       email: user.student_profile?.email || user.email,
       division_id: user.student_profile?.division_id,
     }));

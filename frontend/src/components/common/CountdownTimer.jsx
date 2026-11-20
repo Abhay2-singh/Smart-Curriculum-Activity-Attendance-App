@@ -1,6 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Clock, ShieldAlert } from 'lucide-react';
 
+function parseSafeUtc(dateValue) {
+  if (!dateValue) return null;
+  if (dateValue instanceof Date) return dateValue;
+  let str = String(dateValue).trim();
+  if (!str) return null;
+  // If no timezone suffix specified (no Z, no +HH:MM or -HH:MM), treat as UTC
+  if (!str.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(str) && !/[+-]\d{4}$/.test(str)) {
+    str = str.replace(' ', 'T') + 'Z';
+  }
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 export default function CountdownTimer({ expiresAt, onExpire, expiredLabel = 'SESSION EXPIRED' }) {
   const [timeLeft, setTimeLeft] = useState(0);
   const onExpireRef = useRef(onExpire);
@@ -13,7 +26,9 @@ export default function CountdownTimer({ expiresAt, onExpire, expiredLabel = 'SE
   useEffect(() => {
     if (!expiresAt) return;
 
-    const targetTime = new Date(expiresAt).getTime();
+    const parsedDate = parseSafeUtc(expiresAt);
+    if (!parsedDate) return;
+    const targetTime = parsedDate.getTime();
     const initialDiff = Math.max(0, Math.floor((targetTime - Date.now()) / 1000));
     setTimeLeft(initialDiff);
 

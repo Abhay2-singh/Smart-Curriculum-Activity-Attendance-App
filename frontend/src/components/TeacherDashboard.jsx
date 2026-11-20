@@ -28,20 +28,31 @@ import CountdownTimer from './common/CountdownTimer';
 import RiskBadge from './common/RiskBadge';
 import Toast from './common/Toast';
 
+function parseSafeUtc(dateValue) {
+  if (!dateValue) return null;
+  if (dateValue instanceof Date) return dateValue;
+  let str = String(dateValue).trim();
+  if (!str) return null;
+  if (!str.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(str) && !/[+-]\d{4}$/.test(str)) {
+    str = str.replace(' ', 'T') + 'Z';
+  }
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 function getAttendanceOptions(assignments, timetables, divisions) {
   const options = [];
   assignments.filter((assignment) => assignment.is_active).forEach((assignment) => {
     divisions
       .filter((division) => (
-        division.academic_class_id === assignment.academic_class_id
-        && division.academic_year_id === assignment.academic_year_id
-        && division.semester_id === assignment.semester_id
-        && (assignment.division_id == null || division.id === assignment.division_id)
+        assignment.division_id != null
+          ? division.id === assignment.division_id
+          : (division.academic_class_id === assignment.academic_class_id)
       ))
       .forEach((division) => {
         options.push({
-          academic_year_id: assignment.academic_year_id,
-          semester_id: assignment.semester_id,
+          academic_year_id: assignment.academic_year_id || division.academic_year_id,
+          semester_id: assignment.semester_id || division.semester_id,
           division_id: division.id,
           batch_id: assignment.batch_id,
           subject_id: assignment.subject_id,
@@ -64,8 +75,9 @@ function getAttendanceOptions(assignments, timetables, divisions) {
 }
 
 export default function TeacherDashboard({ user, activeTab = 'overview', onNavigate }) {
+  const displayName = user.teacher_profile?.full_name || user.full_name || user.username;
   const [sessions, setSessions] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(Boolean(user.teacher_profile));
   const [dataError, setDataError] = useState('');
   const [activeQrSession, setActiveQrSession] = useState(null);
   const [monitorData, setMonitorData] = useState(null);
@@ -79,6 +91,7 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
   const [batches, setBatches] = useState([]);
   const [subjects, setSubjects] = useState([]);
   const [timetables, setTimetables] = useState([]);
+  const [teacherAssignments, setTeacherAssignments] = useState([]);
   const [attendanceOptions, setAttendanceOptions] = useState([]);
 
   const [form, setForm] = useState({
@@ -114,8 +127,17 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
   const [threshold, setThreshold] = useState(null);
 
   useEffect(() => {
+    if (!user.teacher_profile) {
+      api.getMe().then((updatedUser) => {
+        if (updatedUser?.teacher_profile) {
+          localStorage.setItem('user', JSON.stringify(updatedUser));
+          window.location.reload();
+        }
+      }).catch(() => {});
+      return;
+    }
     fetchTeacherData();
-  }, [activeTab]);
+  }, [activeTab, user.teacher_profile]);
 
   useEffect(() => {
     if (form.division_id) {
@@ -140,13 +162,9 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
         setSessions((current) => current.map((session) => (
           session.id === refreshed.id ? refreshed : session
         )));
-        setToast({ message: 'QR token refreshed securely.', type: 'success' });
       } catch (err) {
-        setToast({ message: err.message || 'QR token refresh failed. Reopen the session or retry.', type: 'error' });
-        setActiveQrSession(null);
-        api.getSessions().then(setSessions).catch((refreshError) => {
-          setDataError(refreshError.message || 'Unable to refresh attendance sessions.');
-        });
+        console.warn('QR background refresh warning:', err);
+        // Do not close the active QR modal on background refresh warning
       } finally {
         tokenRefreshInFlight.current = false;
       }
@@ -194,15 +212,35 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
         ? ttData.filter((item) => item.teacher_id === teacherId && item.is_active)
         : [];
       const attendanceAssignments = assignments.filter((item) => item.is_active);
-      const options = getAttendanceOptions(attendanceAssignments, teacherTimetables, divs);
+      let options = getAttendanceOptions(attendanceAssignments, teacherTimetables, divs);
+      
+      // Fallback: If no specific assignments are assigned yet, synthesize options from available divisions & subjects
+      if (options.length === 0 && divs.length > 0 && allSubjects.length > 0) {
+        options = [];
+        divs.forEach((division) => {
+          allSubjects.forEach((subject) => {
+            options.push({
+              academic_year_id: division.academic_year_id,
+              semester_id: division.semester_id,
+              division_id: division.id,
+              batch_id: null,
+              subject_id: subject.id,
+            });
+          });
+        });
+      }
+
       const teacherDivisions = divs.filter((division) => (
         options.some((option) => option.division_id === division.id)
       ));
       const assignedSubjectIds = new Set(options.map((option) => option.subject_id));
+      const activeSubjects = allSubjects.filter((subject) => assignedSubjectIds.has(subject.id));
+
       setSemesters(allSemesters);
       setAttendanceOptions(options);
-      setDivisions(teacherDivisions);
-      setSubjects(allSubjects.filter((subject) => assignedSubjectIds.has(subject.id)));
+      setTeacherAssignments(attendanceAssignments);
+      setDivisions(teacherDivisions.length > 0 ? teacherDivisions : divs);
+      setSubjects(activeSubjects.length > 0 ? activeSubjects : allSubjects);
       setTimetables(teacherTimetables);
 
       setForm((previous) => {
@@ -216,11 +254,11 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
         const selection = existingOption || options[0];
         return {
           ...previous,
-          academic_year_id: selection ? String(selection.academic_year_id) : '',
-          semester_id: selection ? String(selection.semester_id) : '',
-          division_id: selection ? String(selection.division_id) : '',
+          academic_year_id: selection ? String(selection.academic_year_id) : (years[0] ? String(years[0].id) : ''),
+          semester_id: selection ? String(selection.semester_id) : (allSemesters[0] ? String(allSemesters[0].id) : ''),
+          division_id: selection ? String(selection.division_id) : (divs[0] ? String(divs[0].id) : ''),
           batch_id: selection?.batch_id == null ? '' : String(selection.batch_id),
-          subject_id: selection ? String(selection.subject_id) : '',
+          subject_id: selection ? String(selection.subject_id) : (allSubjects[0] ? String(allSubjects[0].id) : ''),
         };
       });
 
@@ -314,13 +352,15 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
   const handleShowQr = async (session) => {
     try {
       let current = await api.getAttendanceSession(session.id);
-      const secondsUntilExpiry = (
-        new Date(current.qr_token_expires_at || current.expires_at).getTime() - Date.now()
-      ) / 1000;
-      const refreshWindow = current.qr_token_ttl_seconds
-        - current.qr_refresh_interval_seconds + 2;
+      const parsedExpiry = parseSafeUtc(current.qr_token_expires_at || current.expires_at);
+      const secondsUntilExpiry = parsedExpiry ? (parsedExpiry.getTime() - Date.now()) / 1000 : 0;
+      const refreshWindow = (current.qr_token_ttl_seconds || 45) - (current.qr_refresh_interval_seconds || 30) + 2;
       if (secondsUntilExpiry <= refreshWindow) {
-        current = await api.refreshSessionToken(session.id);
+        try {
+          current = await api.refreshSessionToken(session.id);
+        } catch {
+          // Keep current token if refresh is not needed yet
+        }
       }
       setActiveQrSession(current);
       setSessions((existing) => existing.map((item) => item.id === current.id ? current : item));
@@ -381,52 +421,85 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
   };
 
   const activeSessionsList = sessions.filter((s) => s.status === 'ACTIVE');
-  const availableYears = academicYears.filter((year) => (
-    attendanceOptions.some((option) => option.academic_year_id === year.id)
-  ));
+  const availableYears = academicYears.length > 0 ? academicYears : [];
   const availableSemesters = semesters.filter((semester) => (
-    semester.academic_year_id === Number(form.academic_year_id)
-    && attendanceOptions.some((option) => (
-      option.academic_year_id === semester.academic_year_id
-      && option.semester_id === semester.id
-    ))
+    !form.academic_year_id || semester.academic_year_id === Number(form.academic_year_id)
   ));
   const availableDivisions = divisions.filter((division) => (
-    division.academic_year_id === Number(form.academic_year_id)
-    && division.semester_id === Number(form.semester_id)
-    && attendanceOptions.some((option) => (
-      option.academic_year_id === division.academic_year_id
-      && option.semester_id === division.semester_id
-      && option.division_id === division.id
-    ))
+    (!form.academic_year_id || division.academic_year_id === Number(form.academic_year_id))
+    && (!form.semester_id || division.semester_id === Number(form.semester_id))
   ));
-  const scopedAttendanceOptions = attendanceOptions.filter((option) => (
-    option.academic_year_id === Number(form.academic_year_id)
-    && option.semester_id === Number(form.semester_id)
-    && option.division_id === Number(form.division_id)
+  const availableBatches = batches.length > 0 ? batches : [];
+  const semFilteredSubjects = subjects.filter((subject) => (
+    !form.semester_id || subject.semester_id === Number(form.semester_id) || attendanceOptions.some((opt) => opt.subject_id === subject.id && opt.semester_id === Number(form.semester_id))
   ));
-  const availableBatches = batches.filter((batch) => (
-    scopedAttendanceOptions.some((option) => option.batch_id == null || option.batch_id === batch.id)
-  ));
-  const availableSubjects = subjects.filter((subject) => (
-    subject.semester_id === Number(form.semester_id)
-    && scopedAttendanceOptions.some((option) => (
-      option.subject_id === subject.id
-      && (option.batch_id == null || option.batch_id === Number(form.batch_id))
-    ))
-  ));
-  const hasValidAttendanceSelection = scopedAttendanceOptions.some((option) => (
-    option.subject_id === Number(form.subject_id)
-    && (option.batch_id == null || option.batch_id === Number(form.batch_id))
-  ));
-  const classAssignmentItems = timetables.length > 0
-    ? timetables
-    : attendanceOptions.map((option) => ({
-      ...option,
-      division_name: divisions.find((division) => division.id === option.division_id)?.name,
-      subject_name: subjects.find((subject) => subject.id === option.subject_id)?.name,
-      subject_code: subjects.find((subject) => subject.id === option.subject_id)?.code,
-    }));
+  const availableSubjects = semFilteredSubjects.length > 0 ? semFilteredSubjects : subjects;
+  const hasValidAttendanceSelection = Boolean(
+    form.academic_year_id && form.semester_id && form.division_id && form.subject_id
+  );
+  const classAssignmentItems = (() => {
+    const items = [];
+    const seen = new Set();
+
+    // 1. Timetables
+    timetables.forEach((entry, idx) => {
+      const key = `${entry.subject_id}-${entry.division_id}-${entry.day_of_week || ''}-${entry.start_time || ''}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        items.push({
+          ...entry,
+          _key: entry.id ? `tt-${entry.id}` : `tt-${idx}`,
+          division_name: entry.division_name || divisions.find((d) => d.id === entry.division_id)?.name,
+          subject_name: entry.subject_name || subjects.find((s) => s.id === entry.subject_id)?.name,
+          subject_code: entry.subject_code || subjects.find((s) => s.id === entry.subject_id)?.code,
+        });
+      }
+    });
+
+    // 2. Teacher Assignments
+    teacherAssignments.filter((a) => a.is_active).forEach((a, idx) => {
+      const targetDivs = a.division_id
+        ? divisions.filter((d) => d.id === a.division_id)
+        : divisions.filter((d) => d.academic_class_id === a.academic_class_id);
+      const divsToUse = targetDivs.length > 0 ? targetDivs : (divisions.length > 0 ? [divisions[0]] : []);
+
+      divsToUse.forEach((d) => {
+        const key = `${a.subject_id}-${d.id}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          items.push({
+            id: a.id,
+            _key: `ta-${a.id}-${d.id}-${idx}`,
+            subject_id: a.subject_id,
+            division_id: d.id,
+            academic_year_id: a.academic_year_id || d.academic_year_id,
+            semester_id: a.semester_id || d.semester_id,
+            batch_id: a.batch_id,
+            division_name: d.name,
+            subject_name: subjects.find((s) => s.id === a.subject_id)?.name,
+            subject_code: subjects.find((s) => s.id === a.subject_id)?.code,
+          });
+        }
+      });
+    });
+
+    // 3. Synthesized attendance options
+    attendanceOptions.forEach((option, idx) => {
+      const key = `${option.subject_id}-${option.division_id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        items.push({
+          ...option,
+          _key: `opt-${option.subject_id}-${option.division_id}-${idx}`,
+          division_name: divisions.find((d) => d.id === option.division_id)?.name,
+          subject_name: subjects.find((s) => s.id === option.subject_id)?.name,
+          subject_code: subjects.find((s) => s.id === option.subject_id)?.code,
+        });
+      }
+    });
+
+    return items;
+  })();
   const filteredSessions = sessions.filter((session) => (
     (!sessionSubjectFilter || String(session.subject_id) === sessionSubjectFilter)
     && (!sessionDateFilter || session.session_date === sessionDateFilter)
@@ -434,6 +507,11 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+      {!user.teacher_profile && (
+        <div className="glass-card" role="status" style={{ padding: '1rem 1.25rem', color: 'var(--text-secondary)' }}>
+          Your account is registered. An administrator must link your teacher profile and department before class and attendance features are available.
+        </div>
+      )}
       {dataError && <div className="workspace-error" role="alert">
         {dataError} <button className="btn-secondary" onClick={fetchTeacherData}>Retry</button>
       </div>}
@@ -443,7 +521,7 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
             <div>
               <h1 style={{ fontSize: '1.85rem', fontWeight: 800 }}>
-                Good morning, {user.full_name || user.username} 👋
+                Good morning, {displayName} 👋
               </h1>
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem', marginTop: '0.2rem' }}>
                 Here is your teaching and attendance overview.
@@ -679,20 +757,15 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                       disabled={availableYears.length === 0}
                       onChange={(e) => {
                         const academicYearId = e.target.value;
-                        const firstSemester = semesters.find((semester) => (
-                          semester.academic_year_id === Number(academicYearId)
-                          && attendanceOptions.some((option) => (
-                            option.academic_year_id === semester.academic_year_id
-                            && option.semester_id === semester.id
-                          ))
-                        ));
+                        const matchingSemesters = semesters.filter((semester) => semester.academic_year_id === Number(academicYearId));
+                        const firstSemester = matchingSemesters[0];
+                        const matchingDiv = firstSemester ? divisions.find((d) => d.semester_id === firstSemester.id && d.academic_year_id === Number(academicYearId)) : null;
                         setForm((previous) => ({
                           ...previous,
                           academic_year_id: academicYearId,
                           semester_id: firstSemester ? String(firstSemester.id) : '',
-                          division_id: '',
+                          division_id: matchingDiv ? String(matchingDiv.id) : '',
                           batch_id: '',
-                          subject_id: '',
                         }));
                       }}
                     >
@@ -709,13 +782,16 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                       className="glass-input"
                       value={form.semester_id}
                       disabled={availableSemesters.length === 0}
-                      onChange={(e) => setForm((previous) => ({
-                        ...previous,
-                        semester_id: e.target.value,
-                        division_id: '',
-                        batch_id: '',
-                        subject_id: '',
-                      }))}
+                      onChange={(e) => {
+                        const semId = e.target.value;
+                        const matchingDiv = divisions.find((d) => d.semester_id === Number(semId));
+                        setForm((previous) => ({
+                          ...previous,
+                          semester_id: semId,
+                          division_id: matchingDiv ? String(matchingDiv.id) : previous.division_id,
+                          batch_id: '',
+                        }));
+                      }}
                     >
                       <option value="">Select Semester</option>
                       {availableSemesters.map((s) => (
@@ -732,12 +808,17 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                       className="glass-input"
                       value={form.division_id}
                       disabled={availableDivisions.length === 0}
-                      onChange={(e) => setForm((previous) => ({
-                        ...previous,
-                        division_id: e.target.value,
-                        batch_id: '',
-                        subject_id: '',
-                      }))}
+                      onChange={(e) => {
+                        const divId = e.target.value;
+                        const selectedDiv = divisions.find((d) => String(d.id) === String(divId));
+                        setForm((previous) => ({
+                          ...previous,
+                          division_id: divId,
+                          academic_year_id: selectedDiv ? String(selectedDiv.academic_year_id) : previous.academic_year_id,
+                          semester_id: selectedDiv ? String(selectedDiv.semester_id) : previous.semester_id,
+                          batch_id: '',
+                        }));
+                      }}
                     >
                       <option value="">Select Division</option>
                       {availableDivisions.map((d) => (
@@ -756,12 +837,9 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
                       onChange={(e) => setForm((previous) => ({
                         ...previous,
                         batch_id: e.target.value,
-                        subject_id: '',
                       }))}
                     >
-                      {scopedAttendanceOptions.some((option) => option.batch_id == null) && (
-                        <option value="">All Division (Whole Class)</option>
-                      )}
+                      <option value="">All Division (Whole Class)</option>
                       {availableBatches.map((b) => (
                         <option key={b.id} value={b.id} style={{ background: '#111827' }}>{b.name}</option>
                       ))}
@@ -1033,14 +1111,14 @@ export default function TeacherDashboard({ user, activeTab = 'overview', onNavig
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}>
-              {classAssignmentItems.map((item) => {
+              {classAssignmentItems.map((item, idx) => {
                 const subName = item.subject_name || item.name || `Subject #${item.subject_id}`;
                 const divName = item.division_name || (item.division_id ? `Division #${item.division_id}` : 'Division not specified');
                 const subCode = item.subject_code || `SUB-${item.subject_id}`;
                 const dayName = item.day_of_week || 'Timetable not configured';
 
                 return (
-                  <div key={item.id || idx} className="glass-card" style={{
+                  <div key={item._key || item.id || `assign-${idx}`} className="glass-card" style={{
                     padding: '1.5rem',
                     display: 'flex',
                     flexDirection: 'column',

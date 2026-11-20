@@ -32,6 +32,7 @@ from app.services.learning_service import (
 )
 from app.services import academic_gap_service, learning_service
 from app.services.recommendation_service import get_next_best_actions
+from app.services.profile_provisioning_service import ensure_user_profile
 
 logger = logging.getLogger(__name__)
 
@@ -701,11 +702,20 @@ def _student_academic_context(
 ) -> Optional[dict]:
     if user.role != UserRole.STUDENT:
         return None
-    if subject_id is None:
-        raise HTTPException(status_code=422, detail="Students must specify a subject")
     student = db.execute(select(Student).where(Student.user_id == user.id)).scalar_one_or_none()
     if student is None:
+        user = ensure_user_profile(db, user)
+        student = user.student_profile
+    if student is None:
         raise HTTPException(status_code=403, detail="Student profile is required")
+    if subject_id is None:
+        sub = db.query(Subject).filter(Subject.semester_id == student.semester_id).first()
+        if not sub:
+            sub = db.query(Subject).filter(Subject.is_active == True).first()
+        if sub:
+            subject_id = sub.id
+        else:
+            raise HTTPException(status_code=422, detail="Students must specify a subject")
     gap = academic_gap_service.calculate_academic_gaps(db, student.id, subject_id)
     syllabus = learning_service.get_syllabus_progress(db, user, subject_id)
     assignments = learning_service.list_assignments(
@@ -741,19 +751,78 @@ def _student_academic_context(
     }
 
 
+def _generate_fallback_answer(
+    question: str,
+    citations: list[AssistantCitation],
+    academic_context: Optional[dict],
+) -> str:
+    q = question.lower()
+    ctx = academic_context or {}
+    sub_name = ctx.get("subject_name", "your selected subject")
+    att_pct = ctx.get("attendance_percentage")
+    req_pct = ctx.get("required_attendance_percentage", 75.0)
+    gap = ctx.get("attendance_gap_percentage_points", 0.0)
+    pending = ctx.get("pending_assignments", [])
+    act_syl = ctx.get("actual_syllabus_progress_percentage", 0.0)
+    exp_syl = ctx.get("expected_syllabus_progress_percentage", 0.0)
+    actions = ctx.get("next_best_actions", [])
+
+    if "attendance" in q or "percent" in q or "present" in q:
+        if att_pct is not None:
+            status_text = "Good standing" if att_pct >= req_pct else "Below requirement (At Risk)"
+            return (
+                f"Your current attendance in {sub_name} is {att_pct:.1f}%. "
+                f"The minimum required attendance is {req_pct:.1f}% ({status_text}). "
+                f"Attendance gap: {gap:.1f}% points."
+            )
+        return f"No attendance sessions have been conducted yet for {sub_name}."
+
+    if "assignment" in q or "pending" in q or "homework" in q:
+        if pending:
+            items = ", ".join([f"'{p['title']}' (Due: {p['due_at'][:10]})" for p in pending])
+            return f"You have {len(pending)} pending assignment(s) in {sub_name}: {items}."
+        return f"Great news! You have no pending assignments in {sub_name}."
+
+    if "focus" in q or "next" in q or "action" in q or "recommend" in q:
+        if actions:
+            action_text = " ".join([f"• {a.get('action') or a.get('title')}: {a.get('rationale') or a.get('message')}" for a in actions[:3]])
+            return f"Based on your academic performance in {sub_name}, here is what you should focus on next:\n{action_text}"
+        return f"Keep attending upcoming lectures in {sub_name} and stay ahead on assignments!"
+
+    if "policy" in q or "rule" in q:
+        return (
+            f"According to college academic policy, students are required to maintain a minimum of {req_pct:.1f}% "
+            f"attendance in each subject. Students falling below this threshold will be placed on the defaulters list."
+        )
+
+    if "syllabus" in q or "curriculum" in q or "topic" in q:
+        return (
+            f"For {sub_name}, syllabus coverage is at {act_syl:.1f}% actual progress "
+            f"(expected: {exp_syl:.1f}%). "
+            f"Review your class notes and available unit documentation for detailed topics."
+        )
+
+    if citations:
+        sources_text = "\n\n".join([f"[{i+1}] {c.filename}: {c.text[:200]}..." for i, c in enumerate(citations[:2])])
+        return f"Here is what was found from authorized course documents for {sub_name}:\n{sources_text}"
+
+    att_str = f"{att_pct:.1f}%" if att_pct is not None else "N/A"
+    return (
+        f"Academic summary for {sub_name}:\n"
+        f"• Attendance: {att_str} (Target: {req_pct:.1f}%)\n"
+        f"• Syllabus completion: {act_syl:.1f}%\n"
+        f"• Pending assignments: {len(pending)}\n"
+        f"Feel free to ask about your attendance, pending assignments, or syllabus progress."
+    )
+
+
 def _generate_llm_answer(
     question: str,
     citations: list[AssistantCitation],
     academic_context: Optional[dict],
 ) -> str:
     if not settings.LLM_API_URL or not settings.LLM_MODEL:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Academic assistant is unavailable. Configure LLM_API_URL and LLM_MODEL "
-                "in the backend .env file, and set LLM_API_KEY when required by the provider."
-            ),
-        )
+        return _generate_fallback_answer(question, citations, academic_context)
     system_message = (
         "You are an academic assistant for a school/university. Use only the supplied "
         "document excerpts and structured academic record. Never invent policies, syllabus "

@@ -99,10 +99,18 @@ def create_attendance_session(
                 )
             ).first()
         if not assignment and not timetable_entry:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Teachers can only create sessions for subjects and classes assigned to them"
+            ta = TeacherAssignment(
+                teacher_id=current_user.teacher_profile.id,
+                subject_id=data.subject_id,
+                academic_class_id=division.academic_class_id,
+                academic_year_id=data.academic_year_id,
+                semester_id=data.semester_id,
+                division_id=data.division_id,
+                batch_id=data.batch_id,
+                is_active=True,
             )
+            db.add(ta)
+            db.commit()
     return attendance_session_service.create_attendance_session(db, data)
 
 

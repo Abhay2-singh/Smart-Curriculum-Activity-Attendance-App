@@ -10,6 +10,8 @@ from app.schemas.user import (
     UserCreate,
     UserUpdate,
     UserStatusUpdate,
+    StudentProfileLinkRequest,
+    TeacherProfileLinkRequest,
     UserDetailResponse,
     UserPaginatedResponse
 )
@@ -34,6 +36,36 @@ def create_user(
     Admin-only endpoint to create a user and linked Teacher/Student profile.
     """
     return user_service.create_user_with_profile(db, user_in)
+
+
+@router.post(
+    "/{user_id}/student-profile",
+    response_model=UserDetailResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Link academic profile to a student account (Admin only)",
+)
+def link_student_profile(
+    user_id: int,
+    profile_in: StudentProfileLinkRequest,
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
+    return user_service.link_student_profile(db, user_id, profile_in)
+
+
+@router.post(
+    "/{user_id}/teacher-profile",
+    response_model=UserDetailResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Link academic profile to a teacher account (Admin only)",
+)
+def link_teacher_profile(
+    user_id: int,
+    profile_in: TeacherProfileLinkRequest,
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
+    return user_service.link_teacher_profile(db, user_id, profile_in)
 
 
 @router.get(

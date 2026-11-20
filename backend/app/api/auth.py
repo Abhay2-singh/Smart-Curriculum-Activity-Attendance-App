@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -7,11 +7,15 @@ from app.core.security import create_access_token
 from app.models.user import User
 from app.schemas.auth import (
     LoginRequest,
+    RegistrationRequest,
+    StudentRegistrationRequest,
     TokenResponse,
     UserResponse,
     RoleTestResponse,
 )
-from app.services.auth_service import authenticate_user
+from app.services.auth_service import authenticate_user, register_user
+from app.services.profile_provisioning_service import ensure_user_profile
+from app.models.enums import UserRole
 from app.api.deps import (
     get_current_active_user,
     require_admin,
@@ -40,6 +44,14 @@ def login(
         identifier=login_data.username,
         password=login_data.password
     )
+    if login_data.role and user.role != login_data.role:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials for the selected account type",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = ensure_user_profile(db, user)
 
     access_token = create_access_token(
         subject=user.id,
@@ -59,6 +71,49 @@ def login(
     )
 
 
+@router.post(
+    "/register/student",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register a student account",
+)
+def register_student(
+    registration: StudentRegistrationRequest,
+    db: Session = Depends(get_db),
+):
+    user = register_user(
+        db,
+        full_name=registration.full_name,
+        email=str(registration.email),
+        password=registration.password,
+        role=UserRole.STUDENT,
+        enrollment_number=registration.enrollment_number,
+    )
+    user = ensure_user_profile(db, user)
+    return user
+
+
+@router.post(
+    "/register/teacher",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register a teacher account",
+)
+def register_teacher(
+    registration: RegistrationRequest,
+    db: Session = Depends(get_db),
+):
+    user = register_user(
+        db,
+        full_name=registration.full_name,
+        email=str(registration.email),
+        password=registration.password,
+        role=UserRole.TEACHER,
+    )
+    user = ensure_user_profile(db, user)
+    return user
+
+
 @router.get(
     "/me",
     response_model=UserResponse,
@@ -66,11 +121,13 @@ def login(
     description="Returns current authenticated user details extracted from JWT token."
 )
 def get_me(
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
 ):
     """
     Protected endpoint returning current user information.
     """
+    current_user = ensure_user_profile(db, current_user)
     return UserResponse.model_validate(current_user)
 
 

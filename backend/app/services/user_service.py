@@ -1,6 +1,7 @@
 from typing import List, Optional, Tuple
 from fastapi import HTTPException, status
 from sqlalchemy import or_, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.security import hash_password
@@ -8,7 +9,16 @@ from app.models.user import User
 from app.models.profiles import Teacher, Student
 from app.models.academic import Department, AcademicClass, Division, Batch, AcademicYear, Semester
 from app.models.enums import UserRole
-from app.schemas.user import UserCreate, UserUpdate, TeacherCreate, StudentCreate, TeacherUpdate, StudentUpdate
+from app.schemas.user import (
+    StudentCreate,
+    StudentProfileLinkRequest,
+    StudentUpdate,
+    TeacherCreate,
+    TeacherProfileLinkRequest,
+    TeacherUpdate,
+    UserCreate,
+    UserUpdate,
+)
 
 
 def get_user_by_id(db: Session, user_id: int) -> User:
@@ -82,6 +92,15 @@ def create_user_with_profile(db: Session, user_in: UserCreate) -> User:
         new_user = User(
             username=user_in.username,
             email=user_in.email,
+            full_name=(
+                user_in.teacher_profile.full_name if user_in.teacher_profile
+                else user_in.student_profile.full_name if user_in.student_profile
+                else None
+            ),
+            enrollment_number=(
+                user_in.student_profile.enrollment_number
+                if user_in.student_profile else None
+            ),
             password_hash=hash_password(user_in.password),
             role=user_in.role,
             is_active=True
@@ -105,7 +124,7 @@ def create_user_with_profile(db: Session, user_in: UserCreate) -> User:
             sp = user_in.student_profile
             student = Student(
                 user_id=new_user.id,
-                student_id=sp.student_id,
+                student_id=sp.student_id or sp.enrollment_number,
                 roll_number=sp.roll_number,
                 enrollment_number=sp.enrollment_number,
                 full_name=sp.full_name,
@@ -124,14 +143,150 @@ def create_user_with_profile(db: Session, user_in: UserCreate) -> User:
         db.refresh(new_user)
         return get_user_by_id(db, new_user.id)
 
-    except Exception as e:
+    except HTTPException:
         db.rollback()
-        if isinstance(e, HTTPException):
-            raise e
+        raise
+    except IntegrityError as exc:
+        db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create user: {str(e)}"
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User or academic profile conflicts with an existing username, email, enrollment number, or ID.",
+        ) from exc
+
+
+def link_teacher_profile(
+    db: Session,
+    user_id: int,
+    profile_in: TeacherProfileLinkRequest,
+) -> User:
+    user = get_user_by_id(db, user_id)
+    if user.role != UserRole.TEACHER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only TEACHER accounts can be linked to a teacher profile.",
         )
+    profile_email = user.email.strip().lower()
+    teacher_data = TeacherCreate(
+        employee_id=profile_in.employee_id.strip(),
+        full_name=profile_in.full_name.strip(),
+        email=profile_email,
+        department_id=profile_in.department_id,
+    )
+    _validate_teacher_create(
+        db, teacher_data, exclude_teacher_id=user.teacher_profile.id if user.teacher_profile else None
+    )
+    user.full_name = teacher_data.full_name
+
+    if user.teacher_profile:
+        teacher = user.teacher_profile
+        teacher.employee_id = teacher_data.employee_id
+        teacher.full_name = teacher_data.full_name
+        teacher.email = profile_email
+        teacher.department_id = teacher_data.department_id
+        teacher.is_active = True
+    else:
+        teacher = Teacher(
+            user_id=user.id,
+            employee_id=teacher_data.employee_id,
+            full_name=teacher_data.full_name,
+            email=profile_email,
+            department_id=teacher_data.department_id,
+            is_active=True,
+        )
+        db.add(teacher)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Teacher profile conflicts with an existing employee ID or email.",
+        ) from exc
+    return get_user_by_id(db, user.id)
+
+
+def link_student_profile(
+    db: Session,
+    user_id: int,
+    profile_in: StudentProfileLinkRequest,
+) -> User:
+    user = get_user_by_id(db, user_id)
+    if user.role != UserRole.STUDENT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only STUDENT accounts can be linked to a student profile.",
+        )
+    enrollment_number = profile_in.enrollment_number.strip()
+    existing_enrollment = db.query(User.id).filter(
+        User.enrollment_number == enrollment_number,
+        User.id != user.id,
+    ).first()
+    if existing_enrollment:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This enrollment number is already linked to another account.",
+        )
+
+    profile_email = user.email.strip().lower()
+    student_data = StudentCreate(
+        student_id=profile_in.student_id or enrollment_number,
+        roll_number=profile_in.roll_number.strip(),
+        enrollment_number=enrollment_number,
+        full_name=profile_in.full_name.strip(),
+        email=profile_email,
+        department_id=profile_in.department_id,
+        academic_class_id=profile_in.academic_class_id,
+        division_id=profile_in.division_id,
+        batch_id=profile_in.batch_id,
+        academic_year_id=profile_in.academic_year_id,
+        semester_id=profile_in.semester_id,
+    )
+    _validate_student_create(
+        db, student_data, exclude_student_id=user.student_profile.id if user.student_profile else None
+    )
+    user.full_name = student_data.full_name
+    user.enrollment_number = enrollment_number
+
+    if user.student_profile:
+        student = user.student_profile
+        student.student_id = student_data.student_id or enrollment_number
+        student.roll_number = student_data.roll_number
+        student.enrollment_number = enrollment_number
+        student.full_name = student_data.full_name
+        student.email = profile_email
+        student.department_id = student_data.department_id
+        student.academic_class_id = student_data.academic_class_id
+        student.division_id = student_data.division_id
+        student.batch_id = student_data.batch_id
+        student.academic_year_id = student_data.academic_year_id
+        student.semester_id = student_data.semester_id
+        student.is_active = True
+    else:
+        student = Student(
+            user_id=user.id,
+            student_id=student_data.student_id or enrollment_number,
+            roll_number=student_data.roll_number,
+            enrollment_number=enrollment_number,
+            full_name=student_data.full_name,
+            email=profile_email,
+            department_id=student_data.department_id,
+            academic_class_id=student_data.academic_class_id,
+            division_id=student_data.division_id,
+            batch_id=student_data.batch_id,
+            academic_year_id=student_data.academic_year_id,
+            semester_id=student_data.semester_id,
+            is_active=True,
+        )
+        db.add(student)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Student profile conflicts with an existing enrollment number, email, roll number, or ID.",
+        ) from exc
+    return get_user_by_id(db, user.id)
 
 
 def list_users(
@@ -168,6 +323,8 @@ def list_users(
             or_(
                 User.username.ilike(search_pattern),
                 User.email.ilike(search_pattern),
+                User.full_name.ilike(search_pattern),
+                User.enrollment_number.ilike(search_pattern),
                 Teacher.full_name.ilike(search_pattern),
                 Teacher.employee_id.ilike(search_pattern),
                 Student.full_name.ilike(search_pattern),
@@ -304,28 +461,32 @@ def update_user_status(db: Session, user_id: int, is_active: bool) -> User:
 
 # --- Helper Validation Functions ---
 
-def _validate_teacher_create(db: Session, tp: TeacherCreate):
+def _validate_teacher_create(db: Session, tp: TeacherCreate, exclude_teacher_id: Optional[int] = None):
     # Check FK Department exists
     _verify_fk_exists(db, Department, tp.department_id, "Department")
 
     # Check employee_id uniqueness
-    existing_emp = db.query(Teacher).filter(Teacher.employee_id == tp.employee_id).first()
-    if existing_emp:
+    q_emp = db.query(Teacher).filter(Teacher.employee_id == tp.employee_id)
+    if exclude_teacher_id:
+        q_emp = q_emp.filter(Teacher.id != exclude_teacher_id)
+    if q_emp.first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Teacher Employee ID '{tp.employee_id}' is already registered."
         )
 
     # Check teacher email uniqueness
-    existing_email = db.query(Teacher).filter(Teacher.email == tp.email).first()
-    if existing_email:
+    q_email = db.query(Teacher).filter(Teacher.email == tp.email)
+    if exclude_teacher_id:
+        q_email = q_email.filter(Teacher.id != exclude_teacher_id)
+    if q_email.first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Teacher email '{tp.email}' is already registered."
         )
 
 
-def _validate_student_create(db: Session, sp: StudentCreate):
+def _validate_student_create(db: Session, sp: StudentCreate, exclude_student_id: Optional[int] = None):
     # Check FKs
     _verify_fk_exists(db, Department, sp.department_id, "Department")
     _verify_fk_exists(db, AcademicClass, sp.academic_class_id, "Academic Class")
@@ -334,28 +495,79 @@ def _validate_student_create(db: Session, sp: StudentCreate):
     _verify_fk_exists(db, AcademicYear, sp.academic_year_id, "Academic Year")
     _verify_fk_exists(db, Semester, sp.semester_id, "Semester")
 
-    # Check student_id uniqueness
-    existing_sid = db.query(Student).filter(Student.student_id == sp.student_id).first()
-    if existing_sid:
+    academic_class = db.get(AcademicClass, sp.academic_class_id)
+    division = db.get(Division, sp.division_id)
+    batch = db.get(Batch, sp.batch_id)
+    academic_year = db.get(AcademicYear, sp.academic_year_id)
+    semester = db.get(Semester, sp.semester_id)
+    if academic_class.department_id != sp.department_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Student ID '{sp.student_id}' is already registered."
+            detail="The selected academic class does not belong to the selected department.",
+        )
+    if (
+        division.academic_class_id != sp.academic_class_id
+        or division.academic_year_id != sp.academic_year_id
+        or division.semester_id != sp.semester_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The selected division must match the selected class, academic year, and semester.",
+        )
+    if batch.division_id != sp.division_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The selected batch does not belong to the selected division.",
+        )
+    if semester.academic_year_id != academic_year.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The selected semester does not belong to the selected academic year.",
+        )
+
+    # Check student_id uniqueness
+    student_id = sp.student_id or sp.enrollment_number
+    q_sid = db.query(Student).filter(Student.student_id == student_id)
+    if exclude_student_id:
+        q_sid = q_sid.filter(Student.id != exclude_student_id)
+    if q_sid.first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Student ID '{student_id}' is already registered."
         )
 
     # Check enrollment_number uniqueness
-    existing_en = db.query(Student).filter(Student.enrollment_number == sp.enrollment_number).first()
-    if existing_en:
+    q_en = db.query(Student).filter(Student.enrollment_number == sp.enrollment_number)
+    if exclude_student_id:
+        q_en = q_en.filter(Student.id != exclude_student_id)
+    if q_en.first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Enrollment Number '{sp.enrollment_number}' is already registered."
         )
 
     # Check student email uniqueness
-    existing_email = db.query(Student).filter(Student.email == sp.email).first()
-    if existing_email:
+    q_email = db.query(Student).filter(Student.email == sp.email)
+    if exclude_student_id:
+        q_email = q_email.filter(Student.id != exclude_student_id)
+    if q_email.first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Student email '{sp.email}' is already registered."
+        )
+
+    q_roll = db.query(Student).filter(
+        Student.division_id == sp.division_id,
+        Student.academic_year_id == sp.academic_year_id,
+        Student.semester_id == sp.semester_id,
+        Student.roll_number == sp.roll_number,
+    )
+    if exclude_student_id:
+        q_roll = q_roll.filter(Student.id != exclude_student_id)
+    if q_roll.first():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This roll number is already assigned in the selected division and semester.",
         )
 
 

@@ -82,26 +82,51 @@ export default function LearningWorkspace({ role, user, activeTab }) {
   const teacherId = user?.teacher_profile?.id;
 
   const loadSubjects = useCallback(async () => {
-    if (subjectCache.current.role === role && subjectCache.current.loaded) {
+    if (subjectCache.current.role === role && subjectCache.current.loaded && subjectCache.current.items?.length > 0) {
       return subjectCache.current.items;
     }
     if (role === 'STUDENT') {
-      const summary = await api.getMySummary();
-      const ownSubjects = summary.subject_breakdown || [];
+      let ownSubjects = [];
+      try {
+        const summary = await api.getMySummary();
+        ownSubjects = (summary.subject_breakdown || []).map((item) => ({
+          id: item.subject_id || item.id,
+          name: item.subject_name || item.name,
+          code: item.subject_code || item.code,
+        }));
+      } catch {
+        // Fallback to all subjects
+      }
+      if (ownSubjects.length === 0) {
+        try {
+          ownSubjects = await api.getSubjects();
+        } catch {
+          // Ignored
+        }
+      }
       setSubjects(ownSubjects);
       subjectCache.current = { role, loaded: true, items: ownSubjects };
       return ownSubjects;
     }
-    const allSubjects = await api.getSubjects();
+    const allSubjects = await api.getSubjects().catch(() => []);
     if (role !== 'TEACHER') {
       setSubjects(allSubjects);
       subjectCache.current = { role, loaded: true, items: allSubjects };
       return allSubjects;
     }
-    if (!teacherId) throw new Error('Your account does not have a teacher profile.');
-    const assignments = await api.getSubjectAssignments(teacherId);
-    const assignedIds = new Set(assignments.map((item) => item.subject_id));
-    const ownSubjects = allSubjects.filter((item) => assignedIds.has(item.id));
+    let ownSubjects = [];
+    if (teacherId) {
+      try {
+        const assignments = await api.getSubjectAssignments(teacherId);
+        const assignedIds = new Set(assignments.map((item) => item.subject_id));
+        ownSubjects = allSubjects.filter((item) => assignedIds.has(item.id));
+      } catch {
+        // Fallback
+      }
+    }
+    if (ownSubjects.length === 0) {
+      ownSubjects = allSubjects;
+    }
     setSubjects(ownSubjects);
     subjectCache.current = { role, loaded: true, items: ownSubjects };
     return ownSubjects;
@@ -420,12 +445,18 @@ export default function LearningWorkspace({ role, user, activeTab }) {
               setError('Enter a question with at least three characters.');
               return;
             }
-            if (!selectedSubject && role !== 'ADMIN') {
-              setError('Choose a subject before asking the assistant.');
-              return;
+            let targetSubject = selectedSubject;
+            if (!targetSubject && role !== 'ADMIN') {
+              if (subjects.length > 0) {
+                targetSubject = String(subjects[0].id || subjects[0].subject_id);
+                setSelectedSubject(targetSubject);
+              } else {
+                setError('Choose a subject before asking the assistant.');
+                return;
+              }
             }
             runAction(async () => {
-              const answer = await api.askAcademicAssistant(question, selectedSubject || undefined);
+              const answer = await api.askAcademicAssistant(question, targetSubject || undefined);
               const timestamp = new Date().toISOString();
               setData((messages) => [
                 ...messages,

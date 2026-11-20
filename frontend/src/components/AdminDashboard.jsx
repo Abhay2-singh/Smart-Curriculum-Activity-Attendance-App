@@ -55,6 +55,7 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
   const [userSearch, setUserSearch] = useState('');
   const [debouncedUserSearch, setDebouncedUserSearch] = useState('');
   const [showCreateUserModal, setShowCreateUserModal] = useState(false);
+  const [profileSetupUser, setProfileSetupUser] = useState(null);
   const [createUserForm, setCreateUserForm] = useState({
     username: '',
     email: '',
@@ -211,11 +212,35 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
     }
   };
 
+  const openProfileSetup = (account) => {
+    setProfileSetupUser(account);
+    setCreateUserForm({
+      username: account.username,
+      email: account.email,
+      password: '',
+      full_name: account.full_name || account.student_profile?.full_name || account.teacher_profile?.full_name || '',
+      role: account.role,
+      department_id: '',
+      roll_number: '',
+      student_id: '',
+      enrollment_number: account.enrollment_number || '',
+      employee_id: '',
+      academic_class_id: '',
+      academic_year_id: '',
+      semester_id: '',
+      division_id: '',
+      batch_id: '',
+    });
+    setCreateUserError('');
+    setShowCreateUserModal(true);
+    fetchAcademicStructure();
+  };
+
   const handleCreateUserSubmit = async (e) => {
     e.preventDefault();
     setCreateUserError('');
 
-    if (!createUserForm.username || !createUserForm.email || !createUserForm.password || (createUserForm.role !== 'ADMIN' && !createUserForm.full_name)) {
+    if ((!profileSetupUser && (!createUserForm.username || !createUserForm.email || !createUserForm.password)) || (createUserForm.role !== 'ADMIN' && !createUserForm.full_name)) {
       setCreateUserError('Username, email, and password are required; teacher and student profiles also require a full name.');
       return;
     }
@@ -224,13 +249,38 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
       return;
     }
     if (createUserForm.role === 'STUDENT' && ![
-      'roll_number', 'department_id', 'academic_class_id', 'division_id', 'batch_id', 'academic_year_id', 'semester_id',
+      'enrollment_number', 'roll_number', 'department_id', 'academic_class_id', 'division_id', 'batch_id', 'academic_year_id', 'semester_id',
     ].every((field) => createUserForm[field])) {
-      setCreateUserError('Complete the student roll, department, class, division, batch, academic year, and semester fields.');
+      setCreateUserError('Complete the enrollment number, roll, department, class, division, batch, academic year, and semester fields.');
       return;
     }
 
     try {
+      if (profileSetupUser?.role === 'TEACHER') {
+        await api.linkTeacherProfile(profileSetupUser.id, {
+          full_name: createUserForm.full_name,
+          employee_id: createUserForm.employee_id,
+          department_id: Number(createUserForm.department_id),
+        });
+      } else if (profileSetupUser?.role === 'STUDENT') {
+        await api.linkStudentProfile(profileSetupUser.id, {
+          full_name: createUserForm.full_name,
+          ...(createUserForm.student_id ? { student_id: createUserForm.student_id } : {}),
+          enrollment_number: createUserForm.enrollment_number,
+          roll_number: createUserForm.roll_number,
+          department_id: Number(createUserForm.department_id),
+          academic_class_id: Number(createUserForm.academic_class_id),
+          division_id: Number(createUserForm.division_id),
+          batch_id: Number(createUserForm.batch_id),
+          academic_year_id: Number(createUserForm.academic_year_id),
+          semester_id: Number(createUserForm.semester_id),
+        });
+        setProfileSetupUser(null);
+        setShowCreateUserModal(false);
+        setToast({ message: 'Student academic profile linked successfully.', type: 'success' });
+        fetchUsers();
+        return;
+      } else {
       const payload = {
         username: createUserForm.username,
         email: createUserForm.email,
@@ -250,7 +300,7 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
           full_name: createUserForm.full_name,
           ...(createUserForm.student_id ? { student_id: createUserForm.student_id } : {}),
           roll_number: createUserForm.roll_number,
-          ...(createUserForm.enrollment_number ? { enrollment_number: createUserForm.enrollment_number } : {}),
+          enrollment_number: createUserForm.enrollment_number,
           email: createUserForm.email,
           department_id: Number(createUserForm.department_id),
           academic_class_id: Number(createUserForm.academic_class_id),
@@ -262,7 +312,10 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
       }
 
       await api.createUser(payload);
+      }
+      setProfileSetupUser(null);
       setShowCreateUserModal(false);
+      setToast({ message: profileSetupUser ? 'Teacher academic profile linked successfully.' : 'User account created successfully.', type: 'success' });
       fetchUsers();
       fetchInitialData();
     } catch (err) {
@@ -489,13 +542,24 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
                         </span>
                       </td>
                       <td style={{ padding: '0.85rem 1rem' }}>
-                        <button
-                          className="btn-secondary"
-                          style={{ padding: '0.3rem 0.65rem', fontSize: '0.78rem', color: u.is_active ? '#f87171' : '#34d399' }}
-                          onClick={() => handleToggleUserStatus(u.id, u.is_active)}
-                        >
-                          {u.is_active ? 'Deactivate' : 'Activate'}
-                        </button>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                          {((u.role === 'STUDENT' && !u.student_profile) || (u.role === 'TEACHER' && !u.teacher_profile)) && (
+                            <button
+                              className="btn-secondary"
+                              style={{ padding: '0.3rem 0.65rem', fontSize: '0.78rem' }}
+                              onClick={() => openProfileSetup(u)}
+                            >
+                              Complete profile
+                            </button>
+                          )}
+                          <button
+                            className="btn-secondary"
+                            style={{ padding: '0.3rem 0.65rem', fontSize: '0.78rem', color: u.is_active ? '#f87171' : '#34d399' }}
+                            onClick={() => handleToggleUserStatus(u.id, u.is_active)}
+                          >
+                            {u.is_active ? 'Deactivate' : 'Activate'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -517,7 +581,9 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
       {showCreateUserModal && (
         <div className="modal-overlay">
           <div className="glass-card" style={{ maxWidth: '520px', width: '100%', padding: '2rem' }}>
-            <h3 style={{ fontSize: '1.35rem', fontWeight: 800, marginBottom: '1.25rem' }}>Create System User</h3>
+            <h3 style={{ fontSize: '1.35rem', fontWeight: 800, marginBottom: '1.25rem' }}>
+              {profileSetupUser ? `Complete ${profileSetupUser.role.toLowerCase()} profile` : 'Create System User'}
+            </h3>
 
             {createUserError && (
               <div style={{ color: '#ef4444', fontSize: '0.85rem', marginBottom: '1rem' }}>{createUserError}</div>
@@ -525,7 +591,7 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
 
             <form onSubmit={handleCreateUserSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
+                {!profileSetupUser && <div>
                   <label style={{ display: 'block', fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>Username</label>
                   <input
                     type="text"
@@ -536,7 +602,7 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
                     minLength="3"
                     required
                   />
-                </div>
+                </div>}
                 {createUserForm.role !== 'ADMIN' && <div>
                   <label style={{ display: 'block', fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>Full Name</label>
                   <input
@@ -559,10 +625,11 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
                     placeholder="user@institution.edu"
                     value={createUserForm.email}
                     onChange={(e) => setCreateUserForm({ ...createUserForm, email: e.target.value })}
+                    readOnly={Boolean(profileSetupUser)}
                     required
                   />
                 </div>
-                <div>
+                {!profileSetupUser && <div>
                   <label style={{ display: 'block', fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>Password</label>
                   <input
                     type="password"
@@ -573,10 +640,10 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
                     minLength="6"
                     required
                   />
-                </div>
+                </div>}
               </div>
 
-              <div>
+              {!profileSetupUser && <div>
                 <label style={{ display: 'block', fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>Assign Role</label>
                 <select
                   className="glass-input"
@@ -587,7 +654,7 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
                   <option value="TEACHER" style={{ background: '#111827' }}>TEACHER</option>
                   <option value="ADMIN" style={{ background: '#111827' }}>ADMIN</option>
                 </select>
-              </div>
+              </div>}
 
               {createUserForm.role === 'STUDENT' && (
                 <div className="profile-fields">
@@ -603,8 +670,8 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
                   <label>Student ID (optional)
                     <input className="glass-input" value={createUserForm.student_id} onChange={(e) => setCreateUserForm({ ...createUserForm, student_id: e.target.value })} />
                   </label>
-                  <label>Enrollment number (optional)
-                    <input className="glass-input" value={createUserForm.enrollment_number} onChange={(e) => setCreateUserForm({ ...createUserForm, enrollment_number: e.target.value })} />
+                  <label>Enrollment number
+                    <input className="glass-input" required value={createUserForm.enrollment_number} onChange={(e) => setCreateUserForm({ ...createUserForm, enrollment_number: e.target.value })} />
                   </label>
                 </div>
               )}
@@ -684,8 +751,20 @@ export default function AdminDashboard({ user, activeTab = 'overview', onNavigat
               )}
 
               <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
-                <button type="submit" className="btn-primary" style={{ flex: 1 }}>Create Account</button>
-                <button type="button" className="btn-secondary" style={{ flex: 1 }} onClick={() => setShowCreateUserModal(false)}>Cancel</button>
+                <button type="submit" className="btn-primary" style={{ flex: 1 }}>
+                  {profileSetupUser ? 'Link Academic Profile' : 'Create Account'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ flex: 1 }}
+                  onClick={() => {
+                    setShowCreateUserModal(false);
+                    setProfileSetupUser(null);
+                  }}
+                >
+                  Cancel
+                </button>
               </div>
             </form>
           </div>

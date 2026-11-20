@@ -51,7 +51,7 @@ function getSessionTokenFromQr(value) {
 
 export default function StudentDashboard({ user, activeTab = 'overview', onNavigate }) {
   const [summary, setSummary] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(Boolean(user.student_profile));
   const [dataError, setDataError] = useState('');
 
   // Modals & Toast State
@@ -120,12 +120,13 @@ export default function StudentDashboard({ user, activeTab = 'overview', onNavig
     setActiveStep('VALIDATING');
 
     try {
-      const sessionDetails = await api.getSessionByToken(submittedToken.trim());
-      setMarkedSession(sessionDetails);
+      const sessionDetails = await api.getSessionByToken(submittedToken.trim()).catch(() => null);
+      if (sessionDetails) setMarkedSession(sessionDetails);
       const result = await api.studentMarkAttendance(submittedToken.trim());
       setMarkResult(result);
       setTokenInput('');
       setActiveStep('SUCCESS');
+      setToast({ message: 'Attendance marked successfully!', type: 'success' });
       fetchStudentData();
     } catch (err) {
       setMarkError(err.message);
@@ -137,8 +138,17 @@ export default function StudentDashboard({ user, activeTab = 'overview', onNavig
   };
 
   useEffect(() => {
+    if (!user.student_profile) {
+      api.getMe().then((updatedUser) => {
+        if (updatedUser?.student_profile) {
+          localStorage.setItem('user', JSON.stringify(updatedUser));
+          window.location.reload();
+        }
+      }).catch(() => {});
+      return;
+    }
     fetchStudentData();
-  }, [activeTab]);
+  }, [activeTab, user.student_profile]);
 
   useEffect(() => {
     if (!showScanner) return undefined;
@@ -215,6 +225,11 @@ export default function StudentDashboard({ user, activeTab = 'overview', onNavig
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+      {!user.student_profile && (
+        <div className="glass-card" role="status" style={{ padding: '1rem 1.25rem', color: 'var(--text-secondary)' }}>
+          Connecting to academic profile...
+        </div>
+      )}
       {dataError && <div className="workspace-error" role="alert">
         {dataError} <button className="btn-secondary" onClick={fetchStudentData}>Retry</button>
       </div>}
@@ -224,7 +239,7 @@ export default function StudentDashboard({ user, activeTab = 'overview', onNavig
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
             <div>
               <h1 style={{ fontSize: '1.85rem', fontWeight: 800 }}>
-                Good morning, {displayName.split(' ')[0]} 👋
+                Good morning, {displayName} 👋
               </h1>
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem', marginTop: '0.2rem' }}>
                 Here's your attendance overview for today.

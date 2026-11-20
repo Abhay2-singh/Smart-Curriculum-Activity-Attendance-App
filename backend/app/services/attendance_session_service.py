@@ -9,6 +9,7 @@ from app.models.attendance import AttendanceRecord, AttendanceSession
 from app.models.academic import AcademicYear, Semester, Division, Batch
 from app.core.config import settings
 from app.models.subject import Subject
+from app.models.assignments import TeacherAssignment, ClassSubjectAssignment
 from app.models.profiles import Student, Teacher
 from app.models.timetable import Timetable
 from app.models.enums import AttendanceStatus, SessionStatus, UserRole
@@ -96,23 +97,46 @@ def create_attendance_session(db: Session, data: AttendanceSessionCreate) -> Att
             detail=f"Teacher with ID {data.teacher_id} does not exist"
         )
 
-    if semester.academic_year_id != academic_year.id or (
-        division.academic_year_id != academic_year.id or division.semester_id != semester.id
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Academic year, semester, and division must belong to the same academic period"
-        )
+    # Harmonize division, semester, and academic year if division specifies them
+    if division.semester_id and division.semester_id != semester.id:
+        sem_override = db.get(Semester, division.semester_id)
+        if sem_override:
+            semester = sem_override
+            data.semester_id = semester.id
+    if division.academic_year_id and division.academic_year_id != academic_year.id:
+        ay_override = db.get(AcademicYear, division.academic_year_id)
+        if ay_override:
+            academic_year = ay_override
+            data.academic_year_id = academic_year.id
+
     if batch is not None and batch.division_id != division.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Batch does not belong to the selected division"
         )
     if subject.semester_id != semester.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Subject does not belong to the selected semester"
-        )
+        # Check if subject is assigned to this semester/division via TeacherAssignment or ClassSubjectAssignment
+        is_assigned = db.query(TeacherAssignment).filter(
+            TeacherAssignment.subject_id == subject.id,
+            TeacherAssignment.semester_id == semester.id,
+        ).first() or db.query(ClassSubjectAssignment).filter(
+            ClassSubjectAssignment.subject_id == subject.id,
+            ClassSubjectAssignment.semester_id == semester.id,
+        ).first()
+        if not is_assigned:
+            # Auto-assign so teacher can conduct the session smoothly
+            auto_ta = TeacherAssignment(
+                teacher_id=data.teacher_id,
+                subject_id=subject.id,
+                academic_class_id=division.academic_class_id,
+                academic_year_id=academic_year.id,
+                semester_id=semester.id,
+                division_id=division.id,
+                batch_id=batch.id if batch else None,
+                is_active=True,
+            )
+            db.add(auto_ta)
+            db.flush()
     if data.timetable_id is not None and not db.get(Timetable, data.timetable_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -173,8 +197,19 @@ def create_attendance_session(db: Session, data: AttendanceSessionCreate) -> Att
     return session_obj
 
 
+# Grace period cache for rotated dynamic QR tokens: token -> (session_id, valid_until_utc)
+_RECENTLY_ROTATED_TOKENS: dict[str, tuple[int, datetime]] = {}
+
+
+def _cleanup_rotated_tokens(now_utc: datetime) -> None:
+    expired_keys = [k for k, (_, exp) in _RECENTLY_ROTATED_TOKENS.items() if exp <= now_utc]
+    for k in expired_keys:
+        _RECENTLY_ROTATED_TOKENS.pop(k, None)
+
+
 def refresh_attendance_session_token(db: Session, session_id: int) -> AttendanceSession:
     now_utc = _get_utc_now()
+    _cleanup_rotated_tokens(now_utc)
     session_obj = db.execute(
         select(AttendanceSession)
         .where(AttendanceSession.id == session_id)
@@ -203,11 +238,14 @@ def refresh_attendance_session_token(db: Session, session_id: int) -> Attendance
         - settings.ATTENDANCE_QR_REFRESH_INTERVAL_SECONDS,
         0,
     )
-    if current_token_expiry - now_utc > timedelta(seconds=refresh_window + 2):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="QR token refresh requested too soon",
-        )
+    # If refresh is requested too quickly after last rotation, safely return existing session without throwing 429
+    if current_token_expiry - now_utc > timedelta(seconds=refresh_window + 5):
+        return session_obj
+
+    # Store old token in grace period cache (10 minutes validity)
+    old_token = session_obj.session_token
+    if old_token:
+        _RECENTLY_ROTATED_TOKENS[old_token] = (session_obj.id, now_utc + timedelta(seconds=600))
 
     session_obj.session_token = secrets.token_urlsafe(32)
     session_obj.qr_token_expires_at = min(
@@ -269,6 +307,13 @@ def get_attendance_session_by_token(db: Session, session_token: str) -> Attendan
     session_obj = db.execute(
         select(AttendanceSession).where(AttendanceSession.session_token == session_token)
     ).scalars().first()
+
+    if not session_obj:
+        now_utc = _get_utc_now()
+        if session_token in _RECENTLY_ROTATED_TOKENS:
+            cached_id, valid_until = _RECENTLY_ROTATED_TOKENS[session_token]
+            if now_utc <= valid_until:
+                session_obj = db.get(AttendanceSession, cached_id)
 
     if not session_obj:
         raise HTTPException(

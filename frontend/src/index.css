@@ -153,6 +153,19 @@ h1, h2, h3, h4, h5, h6 {
   background: rgba(255, 255, 255, 0.08);
 }
 
+select.glass-input {
+  color-scheme: dark;
+}
+
+select.glass-input option {
+  color: var(--text-primary);
+  background-color: var(--bg-secondary);
+}
+
+[data-theme="light"] select.glass-input {
+  color-scheme: light;
+}
+
 /* Buttons */
 .btn-primary {
   display: inline-flex;
